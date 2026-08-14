@@ -1,0 +1,32 @@
+{
+  "database_url": "postgresql+asyncpg://nocturne:k0B5e4Y7WkgeGmoCKvEHuOkt8yKqfKGY@postgres:5432/nocturne_memory?ssl=disable",
+  "db_pool_size": 5,
+  "db_max_overflow": 5,
+  "valid_domains": [
+    "core",
+    "writer",
+    "game",
+    "notes",
+    "narrative"
+  ],
+  "boot_uris": {
+    "": [
+      "core://agent",
+      "core://my_user",
+      "core://agent/my_user"
+    ]
+  },
+  "host": "0.0.0.0",
+  "web_port": 8233,
+  "auto_open_browser": false,
+  "api_token": "58sVWrSVCtB6nKKoLwZbIYmkfv_GS7RC8wOJbTS_jMM",
+  "cors_origins": null,
+  "public_readonly_mcp": false,
+  "locale": "zh",
+  "world_clock": {
+    "current_time": "2026-08-10",
+    "auto_timestamp": true,
+    "show_relative": true,
+    "format": "YYYY-MM-DD"
+  }
+}

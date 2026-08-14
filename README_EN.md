@@ -665,7 +665,7 @@ In addition to the local Python installation, you can deploy the full Nocturne M
 4. **Open the management dashboard**
    Visit `http://localhost` (or the port you specified)
 
-> 💡 **Note**: On first launch, `backend` automatically initializes the database schema (`create_all`). On every launch, it also checks for and applies pending database migrations (`db/migrations/`). The database is automatically backed up before migrations are applied (saved in the `backups_data` volume).
+> 💡 **Note**: On first launch, `backend` automatically initializes the database schema (`create_all`). On every launch, it also checks for and applies pending database migrations (`db/migrations/`). The database is automatically backed up before migrations are applied (saved in the `./data/backups` directory).
 > ⚠️ **Warning**: Docker deployment uses a fresh PostgreSQL database, which is **completely empty** by default. It does not contain the pre-configured example data from `demo.db`. You will need to create your AI's core memories from scratch using the client or Dashboard.
 
 ### MCP Client Configuration

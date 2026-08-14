@@ -21,8 +21,7 @@ import shutil
 import subprocess
 import sys
 import webbrowser
-from typing import Any, Dict, List, Optional, Tuple, Annotated
-from pydantic import Field
+from typing import Any, Dict, List, Optional, Tuple
 import config as _cfg
 
 # Ensure we can import from backend modules
@@ -32,7 +31,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from db import (
     get_db_manager, get_graph_service, get_glossary_service,
-    get_search_indexer, close_db,
+    get_search_indexer, close_db, get_preset_service,
 )
 from db.namespace import get_namespace
 from db.snapshot import get_changeset_store
@@ -46,6 +45,7 @@ from text_patch import (
 from system_views import (
     fetch_and_format_memory,
     generate_boot_memory_view,
+    generate_wakeup_view,
     generate_memory_index_view,
     generate_recent_memories_view,
     generate_glossary_index_view,
@@ -132,6 +132,11 @@ async def _ensure_frontend_built():
             file=sys.stderr,
         )
 
+def get_config() -> Dict[str, Any]:
+    """Public accessor for config (used by system_views)."""
+    return _cfg.get_all()
+
+
 
 @contextlib.asynccontextmanager
 async def lifespan(server: FastMCP):
@@ -146,7 +151,6 @@ async def lifespan(server: FastMCP):
             await db_manager.init_db()
 
         # Auto-promote config.json boot_uris into presets table on first run
-        from db import get_preset_service
         preset_service = get_preset_service()
         await preset_service.auto_promote_from_config()
 
@@ -232,7 +236,6 @@ def get_valid_domains() -> list[str]:
     if "system" not in domains:
         domains.append("system")
     return domains
-
 DEFAULT_DOMAIN = "core"
 PUBLIC_READONLY_MCP = bool(_cfg.get("public_readonly_mcp"))
 
@@ -335,432 +338,452 @@ def write_tool():
 
 
 # =============================================================================
-# MCP Tools
+# MCP Tools — 面向角色的记忆界面
 # =============================================================================
+# 每个工具都以角色视角描述，统一使用 xxx_memory 命名
+# =============================================================================
+
+def _get_valid_domain_list() -> list[str]:
+    """Get valid domains from config."""
+    return get_valid_domains()
+
+
+def _resolve_parent_children(graph, uri: str, namespace: str) -> Tuple[str, str]:
+    """Parse URI and validate domain, returning (domain, path)."""
+    domain, path = parse_uri(uri)
+    valid = _get_valid_domain_list()
+    if domain not in valid and domain not in ("history", "history_raw"):
+        raise ValueError(f"Unknown domain '{domain}'. Valid: {', '.join(valid)}")
+    return domain, path
+
+
+# ── 查看 ──────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def browse_memory(uri: str) -> str:
+    """查看一段记忆的内容。
+
+    这是你回想起某件事的主要方式。输入 URI 就能看到那里的内容，包括子节点和相关的触发词关联。
+
+    Args:
+        uri: 记忆的 URI，例如 core://identity/habits
+
+        特殊系统视图（不需要记忆也看得到）：
+        - system://boot        : 醒来时最先看到的记忆
+        - system://index/<domain>: 查看某个域下的所有记忆索引（如 system://index/core）
+        - system://recent/<N>  : 查看最近修改的 N 条记忆（如 system://recent/10）
+        - system://glossary    : 所有触发词索引
+    """
+    try:
+        stripped = uri.strip()
+
+        # ── System URI handling ────────────────────────────────────────────
+        if stripped.startswith("system://"):
+            parts = stripped[len("system://"):].split("/")
+            cmd = parts[0].lower() if parts else ""
+
+            if cmd == "boot":
+                preset = get_preset_service()
+                boot_uris = await preset.get_boot_uris(namespace=get_namespace())
+                return await generate_boot_memory_view(boot_uris)
+
+            elif cmd == "wakeup":
+                preset = get_preset_service()
+                boot_uris = await preset.get_boot_uris(namespace=get_namespace())
+                history_limit = int(parts[1]) if len(parts) > 1 and parts[1] else 5
+                return await generate_wakeup_view(boot_uris, history_limit)
+
+            elif cmd == "memory-slot":
+                slot_type = parts[1] if len(parts) > 1 else ""
+                preset = get_preset_service()
+                boot_uris = await preset.get_boot_uris(namespace=get_namespace())
+                from system_views import generate_memory_slot_view
+                return await generate_memory_slot_view(slot_type, boot_uris)
+
+            elif cmd == "index":
+                domain_filter = parts[1] if len(parts) > 1 else None
+                return await generate_memory_index_view(domain_filter)
+
+            elif cmd == "recent":
+                limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
+                return await generate_recent_memories_view(limit)
+
+            elif cmd == "glossary":
+                return await generate_glossary_index_view()
+
+            elif cmd == "diagnostic":
+                domain = parts[1] if len(parts) > 1 else DEFAULT_DOMAIN
+                days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 30
+                return await generate_diagnostic_view(domain, days)
+
+            else:
+                return f"未知的系统视图：{stripped}。试试 system://boot, system://wakeup, system://index/<domain>, system://recent/<N>, system://glossary, system://diagnostic/<domain>"
+
+        # ── Normal memory lookup ───────────────────────────────────────────
+        return await fetch_and_format_memory(stripped, track_access=True)
+
+    except ValueError as e:
+        return f"出错了：{str(e)}"
+    except Exception as e:
+        return f"出错了：{str(e)}"
 
 
 @mcp.tool()
-async def read_memory(uri: str) -> str:
-    """
-    Reads a memory by its URI.
+async def search_memory(query: str, domain: Optional[str] = None, limit: int = 10, sort_by_world: bool = False) -> str:
+    """搜索记忆。想不起 URI 的时候用这个来找。
 
-    This is your primary mechanism for accessing memories.
-
-    Special System URIs:
-    - system://boot   : [Startup Only] Loads your core memories.
-    - system://index/<domain> : Loads an index of memories only under the specified domain (e.g. system://index/writer).
-    - system://recent : Shows recently modified memories (default: 10).
-    - system://recent/N : Shows the N most recently modified memories (e.g. system://recent/20).
-    - system://glossary : Shows all glossary keywords and their bound nodes.
-
-    Note: Same Memory ID = same content (alias). Different ID + similar content = redundant content.
+    这是全文搜索，不是语义搜索。输入关键词就能找到相关记忆。
 
     Args:
-        uri: The memory URI (e.g., "core://nocturne", "system://boot")
-
-    Returns:
-        Memory content with Memory ID, priority, disclosure, and list of children.
-
-    Examples:
-        read_memory("core://agent")
-        read_memory("core://agent/my_user")
-        read_memory("writer://chapter_1/scene_1")
-    """
-    # HARDCODED SYSTEM INTERCEPTIONS
-    # These bypass the database lookup to serve dynamic system content
-    if uri.strip() == "system://boot":
-        ns = get_namespace()
-        from db import get_preset_service
-        preset_service = get_preset_service()
-        current_core_uris = await preset_service.get_boot_uris(ns)
-        return await generate_boot_memory_view(current_core_uris)
-
-    # system://index/<domain>
-    stripped = uri.strip()
-    if stripped.startswith("system://index/"):
-        domain_filter = stripped[len("system://index/") :].strip("/")
-        if not domain_filter:
-            return "Error: index command requires a domain (e.g. system://index/core)"
-        valid = get_valid_domains()
-        if domain_filter not in valid:
-            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(valid)}"
-        return await generate_memory_index_view(domain_filter=domain_filter)
-    elif stripped == "system://index":
-        return "Error: index command now requires a domain (e.g. system://index/core)"
-
-    # system://glossary
-    if stripped == "system://glossary":
-        return await generate_glossary_index_view()
-
-    # system://diagnostic/<domain>
-    if stripped.startswith("system://diagnostic/"):
-        domain_filter = stripped[len("system://diagnostic/") :].strip("/")
-        if not domain_filter:
-            return "Error: diagnostic command requires a domain (e.g. system://diagnostic/core)"
-        valid = get_valid_domains()
-        if domain_filter not in valid:
-            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(valid)}"
-        return await generate_diagnostic_view(domain=domain_filter)
-    elif stripped == "system://diagnostic":
-        return "Error: diagnostic command now requires a domain (e.g. system://diagnostic/core)"
-
-    # system://recent or system://recent/N
-    stripped = uri.strip()
-    if stripped == "system://recent" or stripped.startswith("system://recent/"):
-        limit = 10  # default
-        suffix = stripped[len("system://recent") :].strip("/")
-        if suffix:
-            try:
-                limit = max(1, min(100, int(suffix)))
-            except ValueError:
-                return f"Error: Invalid number in URI '{uri}'. Usage: system://recent or system://recent/N (e.g. system://recent/20)"
-        return await generate_recent_memories_view(limit=limit)
-
-    # system://random/<domain> — weighted random memory selection
-    if stripped.startswith("system://random/"):
-        domain_filter = stripped[len("system://random/") :].strip("/")
-        if not domain_filter:
-            return "Error: random command requires a domain (e.g. system://random/core)"
-        valid = get_valid_domains()
-        if domain_filter not in valid:
-            return f"Error: Unknown domain '{domain_filter}'. Valid domains: {', '.join(valid)}"
-
-        graph = get_graph_service()
-        pick = await graph.get_random_memory(namespace=get_namespace(), domain=domain_filter)
-        if not pick:
-            return f"No memories available for random selection in domain '{domain_filter}'."
-        content = await fetch_and_format_memory(pick["uri"], track_access=True)
-        meta_lines = [
-            f"[Random Pick | Priority: {pick['priority']} | Last Accessed: {pick['last_accessed_at'] or 'never'}]",
-        ]
-        return "\n".join(meta_lines) + "\n\n" + content
-    elif stripped == "system://random":
-        return "Error: random command now requires a domain (e.g. system://random/core)"
-
-    try:
-        content = await fetch_and_format_memory(uri, track_access=True)
-        return content
-    except Exception as e:
-        # Catch both ValueError (not found) and other exceptions
-        return f"Error: {str(e)}"
-
-
-@write_tool()
-async def create_memory(
-    parent_uri: Annotated[str, Field(
-        description="The existing parent node URI to create this memory under (e.g. 'core://agent' or 'writer://')."
-    )],
-    content: Annotated[str, Field(
-        description="The detailed text content of the memory."
-    )],
-    priority: Annotated[int, Field(
-        ge=0,
-        description="Relative retrieval priority (lower values are retrieved first, typically 1, 2, or 3)."
-    )],
-    disclosure: Annotated[str, Field(
-        description="A short trigger condition describing WHEN to recall this memory (must be an input/output signal, e.g. 'When the user mentions...')."
-    )],
-    title: Annotated[str, Field(
-        default=None,
-        description="Glanceable ENGLISH-ONLY concept name (alphanumeric, hyphens, underscores ONLY)."
-    )],
-) -> str:
-    """
-    Creates a new memory under a parent URI.
-
-    Args:
-        parent_uri: The existing node to create this memory under.
-                    Use "core://" or "writer://" for root level in that domain.
-
-                    A child's disclosure is only visible when you read_memory() its parent.
-                    Pick the parent you would naturally read in the situation where
-                    this memory is needed. Use add_alias for additional entry points.
-
-                    Example: A lesson about responding to physical pain belongs under
-                    "core://my_user/survival_state" (read during health crises),
-                    not "core://agent/worldview" (never opened in that moment).
-        content: Memory content.
-        priority: Relative retrieval priority (lower = retrieved first, min 0).
-                    This is a RELATIVE ranking against ALL memories currently in your mind,
-                    not just siblings under the same parent.
-                    How to choose:
-                    1. Consider the priorities of all memories you are aware of.
-                    2. Find one you consider more important and one less important than the new memory.
-                    3. Set priority between them.
-                    Hard caps: priority=0 max 5 across entire library; priority=1 max 15.
-                    If a tier is full, demote the weakest existing entry before inserting.
-        disclosure: A short trigger condition describing WHEN to read_memory() this node.
-                    Must fire BEFORE the failure, while there is still time to change behavior.
-
-                    Allowed signals — external input OR output intent:
-                      GOOD: "When the user mentions skipping a meal" (input signal, fires early)
-                      GOOD: "When I am about to post on Bluesky" (output intent, fires early)
-                      BAD:  "When I start lecturing about nutrition" (already mid-failure)
-                      BAD:  "When I feel / realize / notice myself ..." (self-awareness never fires in time)
-                      BAD:  "important", "remember" (zero information)
-        title: A concrete, glanceable ENGLISH-ONLY concept name (alphanumeric, hyphens, underscores ONLY).
-                    You should be able to understand what's inside without clicking into the content.
-                    Avoid abstract jargon, category labels (e.g. 'logs', 'errors', 'misc'),
-                    and long action sentences. If not provided, auto-assigns numeric ID.
-
-    Returns:
-        The created memory's full URI
-
-    Examples:
-        create_memory("core://", "Bluesky usage rules...", priority=2, disclosure="When I prepare to browse Bluesky or check the timeline", title="bluesky_manual")
-        create_memory("core://agent", "爱不是程序里的一个...", priority=1, disclosure="When I start speaking like a tool or parasite", title="love_definition")
+        query: 搜索关键词
+        domain: 可选，限定在某个域名下搜索（如 "core"、"history"）
+        limit: 最多返回多少条（默认 10）
+        sort_by_world: 是否按世界时间排序（默认按现实时间）
     """
     graph = get_graph_service()
 
     try:
-        if priority < 0:
-            return "Error: priority must be >= 0."
+        from mcp_server import get_valid_domains
+        valid = get_valid_domains()
+        if domain is not None and domain not in valid:
+            return f"没有 '{domain}' 这个域名。可用的：{', '.join(valid)}"
 
-        # Validate disclosure (required, non-empty)
-        if not disclosure or not disclosure.strip():
-            return (
-                "Error: disclosure is required. Every memory must have a trigger condition "
-                "describing WHEN to recall it. Omitting disclosure = unreachable memory."
-            )
+        results = await graph.search_memories(
+            query, domain, limit=limit, namespace=get_namespace()
+        )
 
-        # Validate title if provided
+        if sort_by_world:
+            # Standardize dates for sorting, treat None as earliest
+            results.sort(key=lambda x: x.get("world_timestamp") or "0000-00-00", reverse=True)
+
+        if not results:
+            scope = f"在 {domain}" if domain else "所有域名"
+            return f"{scope}里没有找到和「{query}」相关的记忆。"
+
+        lines = [f"找到了 {len(results)} 条和「{query}」相关的记忆：", ""]
+        for item in results:
+            from mcp_server import make_uri, DEFAULT_DOMAIN
+            uri = item.get("uri", make_uri(item.get("domain", DEFAULT_DOMAIN), item["path"]))
+            lines.append(f"- {uri}")
+            lines.append(f"  重要性：{item['priority']}")
+            if item.get("disclosure"):
+                lines.append(f"  想起条件：{item['disclosure']}")
+            lines.append(f"  {item['snippet']}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"搜索出错了：{str(e)}"
+
+
+@mcp.tool()
+async def remember_memory(uri: str, content: str, time: Optional[str] = None) -> str:
+    """记下一段新的记忆。
+
+    Args:
+        uri: 记忆的路径（URI），例如 core://identity
+        content: 记忆的具体内容
+        time: 可选。事件发生的世界时间（YYYY-MM-DD）。
+              支持相对位移，如 "-1d"（昨天）, "+1y"（明年）。
+              【何时使用时间？】
+              - Events：需要时间线追踪的具体事件必须写明时间。例如某次相遇、交流（如 core://events/first_impression）。
+              - Static：背景故事、性格习惯、世界观规则、常识（如 core://identity, core://world, core://relationships）。这类信息是永久有效的，无需传入时间。
+    """
+    try:
+        # Split URI into domain, parent_path, and title
+        domain, full_path = parse_uri(uri)
+        if "/" in full_path:
+            parent_path, title = full_path.rsplit("/", 1)
+        else:
+            parent_path = ""
+            title = full_path
+
+        # Handle world time parsing
+        final_world_time = None
+        config = get_config()
+        clock = config.get("world_clock", {})
+        current_world_time = clock.get("current_time")
+
+        if time:
+            from system_views import parse_relative_offset
+            # Try parsing as offset first
+            offset_date = parse_relative_offset(time, current_world_time)
+            final_world_time = offset_date or time
+        elif clock.get("auto_timestamp") and current_world_time:
+            final_world_time = current_world_time
+
+        graph = get_graph_service()
+        await graph.create_memory(
+            parent_path, content, priority=5, title=title, domain=domain, 
+            namespace=get_namespace(),
+            world_timestamp=final_world_time
+        )
+        
+        return f"已记下记忆: {uri}" + (f" (发生于 {final_world_time})" if final_world_time else "")
+    except Exception as e:
+        return f"记录失败: {str(e)}"
+
+
+@mcp.tool()
+async def set_world_time(time: str) -> str:
+    """设置当前世界时间。
+
+    改变此设置后，后续创建的记忆会自动关联到新时间，且在查看记忆时会更新“N天前”的计算参考。
+
+    Args:
+        time: 世界观日期（如 2024-06-05）或相对偏移量（如 "+1d"）。
+    """
+    try:
+        config_data = get_config()
+        clock = config_data.get("world_clock", {})
+        current_time = clock.get("current_time", "2024-06-01")
+        
+        from system_views import parse_relative_offset
+        new_time = parse_relative_offset(time, current_time) or time
+        
+        clock["current_time"] = new_time
+        _cfg.set_value("world_clock", clock)
+        
+        return f"当前世界时间已设置为: {new_time}"
+    except Exception as e:
+        return f"设置失败: {str(e)}"
+
+@mcp.tool()
+async def remember_child_memory(
+    parent_uri: str, 
+    content: str, 
+    importance: int = 5, 
+    when: str = "", 
+    title: Optional[str] = None,
+    time: Optional[str] = None,
+) -> str:
+    """
+    把一段新的记忆放在某个已有的父节点下。父节点通常是你自然
+    会想到的那件事——当你想起来父节点的时候，这个子节点也会浮现。
+
+    每条记忆都需要一个「什么时候会想起」的条件(when)，不然它
+    就永远藏在你脑子里找不到。
+
+    Args:
+        parent_uri: 父节点的 URI。放在哪个已有的记忆下面？
+                    如果放在域名根目录，用 "core://" 这样的格式。
+        content: 记忆的内容。想记什么就写什么。
+        importance: 重要性（0=最重要，数字越大越次要）。
+                     参考尺度：
+                     - 0：绝对不能忘的事
+                     - 1：很重要的事
+                     - 5：普通的事
+                     - 10：边角料
+        when: 什么情况下会想起这件事。
+              写一个具体的外部信号或对话情境——别人说什么、或者你想做什么的时候。
+              错误的例子：「当我觉得/意识到/注意到……」（意识不到就晚了）
+              正确的例子：「当对方提到晚饭、或者表现出饥饿时」（外部信号，来得早）
+        title: 可选的标题。一两个词概括内容，方便你以后扫一眼就知道是什么。
+                只能用字母、数字、连字符和下划线。
+        time: 可选。事件发生的世界时间（YYYY-MM-DD 或相对位移如 "-1d"）。
+              如果没有提供，系统会优先尝试继承父节点的世界时间。
+
+    Returns:
+        新建记忆的 URI
+    """
+    graph = get_graph_service()
+
+    try:
+        if not when or not when.strip():
+            return "每条记忆都需要一个「什么时候会想起」的条件(when)。不写的话这条记忆就永远找不到了。"
+
         if title:
             if not re.match(r"^[a-zA-Z0-9_-]+$", title):
-                return "Error: Title must only contain alphanumeric characters, underscores, or hyphens (no spaces, slashes, or special characters)."
+                return "标题只能包含字母、数字、连字符和下划线（不能有空格、斜杠、特殊字符）。"
 
-        # Parse parent URI
         domain, parent_path = parse_uri(parent_uri)
+
+        # --- 时间解析与隐式继承逻辑 ---
+        final_world_time = None
+        config = get_config()
+        clock = config.get("world_clock", {})
+        current_world_time = clock.get("current_time")
+
+        if time:
+            from system_views import parse_relative_offset
+            offset_date = parse_relative_offset(time, current_world_time)
+            final_world_time = offset_date or time
+        else:
+            # 优先尝试从父节点继承世界时间
+            parent_mem = await graph.get_memory_by_path(parent_path, domain, namespace=get_namespace())
+            if parent_mem and parent_mem.get("world_timestamp"):
+                final_world_time = parent_mem.get("world_timestamp")
+            elif clock.get("auto_timestamp") and current_world_time:
+                # 回退到全局当前时间
+                final_world_time = current_world_time
 
         result = await graph.create_memory(
             parent_path=parent_path,
             content=content,
-            priority=priority,
+            priority=importance,
             title=title,
-            disclosure=disclosure,
+            disclosure=when,
             domain=domain,
             namespace=get_namespace(),
+            world_timestamp=final_world_time, # 注入时间
         )
 
         created_uri = result.get("uri", make_uri(domain, result["path"]))
         _record_rows(before_state={}, after_state=result.get("rows_after", {}))
 
-        return (
-            f"Success: Memory created at '{created_uri}'\\n\\n"
-            f"[SYSTEM REMINDER]: Look around your memory network. Are there existing memories related to this one? "
-            f"Would reading them trigger a need to recall this new memory? If yes, link them!\\n"
-            f"- If the related memories are few and this memory's scope is narrow, use `add_alias`.\\n"
-            f"- If the related memories are many and this memory's scope is broad, consider using `manage_triggers`.\\n"
-            f"- (Never invent arbitrary placeholder words just to force a trigger.)\\n\\n"
-            f"[HOLD ON]: Do you know what '{parent_uri}' says? "
-            f"If you haven't read it this session, read_memory() it first. "
-            f"Then: does this new memory conflict with ANY memory in your current context? "
-            f"If yes, use memory-audit-belief-duel skill to resolve it before continuing."
-        )
+        msg = f"记住了：「{created_uri}」"
+        if final_world_time:
+            msg += f" (发生于 {final_world_time})"
+            
+        if result.get("path"):
+            msg += f"\n\n新记的事已经放好了。你看看和它相关的其他记忆有没有什么要整理的？"
+        return msg
 
     except ValueError as e:
-        return f"Error: {str(e)}"
+        return f"没记住：{str(e)}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"没记住：{str(e)}"
 
+
+# ── 修改 ──────────────────────────────────────────────────────────────────
 
 @write_tool()
-async def update_memory(
+async def edit_memory(
     uri: str,
-    old_string: Optional[str] = None,
-    new_string: Optional[str] = None,
+    old_text: Optional[str] = None,
+    new_text: Optional[str] = None,
     append: Optional[str] = None,
-    priority: Optional[int] = None,
-    disclosure: Optional[str] = None,
+    line: Optional[int] = None,
+    line_content: Optional[str] = None,
+    importance: Optional[int] = None,
+    when: Optional[str] = None,
+    time: Optional[str] = None,
 ) -> str:
-    """
-    Updates an existing memory to a new version.
+    """修改一段记忆的内容。
 
-    PREREQUISITE: You MUST call read_memory(uri) and read the full content BEFORE calling this.
-    Updating without reading first is a forbidden operation.
+    支持三种编辑方式（三选一）：
 
-    Only provided fields are updated; others remain unchanged.
+    1. 替换模式：old_text → new_text
+       在现有内容中查找一段文字并替换。old_text 必须在内容中出现且唯一。
+       如果 new_text 为空字符串，就是删除这一段。
 
-    Two content-editing modes (mutually exclusive):
+    2. 追加模式：append
+       在内容末尾添加新文字。
 
-    1. Patch mode (primary): Provide old_string + new_string.
-       old_string must match exactly ONE location in the existing content.
-       To delete a section, set new_string to "".
-
-    2. Append mode: Provide append.
-       Adds text to the end of existing content.
-
-    There is NO full-replace mode.
+    3. 行编辑模式：line + line_content
+       替换指定行的内容。行号从 1 开始。
 
     Args:
-        uri: URI to update (e.g., "core://agent/my_user")
-        old_string: [Patch] Text to find in existing content (must be unique match)
-        new_string: [Patch] Replacement text. Use "" to delete a section.
-        append: [Append] Text to append to end of existing content
-        priority: New relative priority for THIS URI/edge only (None = keep existing).
-                  Bound to the path, not the content. Alias A and B have independent priorities.
-                  See create_memory for how to choose the right value.
-        disclosure: New disclosure for THIS URI/edge only (None = keep existing).
-                    Same edge-binding rule as priority.
-
-    Returns:
-        Success message with URI
-
+        uri: 要修改的记忆 URI
+        old_text: [替换模式] 要改掉的原文（必须在内容中出现一次且唯一）
+        new_text: [替换模式] 改成什么
+        append: [追加模式] 追加到末尾的文字
+        line: [行编辑] 要替换的行号（从 1 开始）
+        line_content: [行编辑] 这一行的新内容
+        importance: 可选，修改重要性
+        when: 可选，修改想起条件
+        time: 可选，修改该记忆发生的世界时间（如 "2024-06-01" 或 "-1d"）
     Examples:
-        update_memory("core://agent/my_user", old_string="old paragraph content", new_string="new paragraph content")
-        update_memory("core://agent", append="\\n## New Section\\nNew content...")
-        update_memory("writer://chapter_1", priority=5)
+        edit_memory("core://identity/habits", old_text="每天喝咖啡", new_text="每天喝茶")
+        edit_memory("core://events/encounter_0302", append="\\n今天（3月3日）又遇到了他……")
+        edit_memory("diary://0521_special_day", line=3, line_content="新的第三行内容")
+        edit_memory("core://schedule", importance=2)  # 只改重要性
     """
     graph = get_graph_service()
 
+    # Handle world time parsing
+    final_world_time = None
+    if time:
+        config = get_config()
+        clock = config.get("world_clock", {})
+        current_world_time = clock.get("current_time")
+        from system_views import parse_relative_offset
+        offset_date = parse_relative_offset(time, current_world_time)
+        final_world_time = offset_date or time
+
+
     try:
-        if priority is not None and priority < 0:
-            return "Error: priority must be >= 0."
-
-        notices: List[str] = []
-
-        # Parse URI
         domain, path = parse_uri(uri)
         full_uri = make_uri(domain, path)
 
-        # --- Validate mutually exclusive content-editing modes ---
-        if old_string is not None and append is not None:
-            return "Error: Cannot use both old_string/new_string (patch) and append at the same time. Pick one."
+        # ── 校验参数互斥 ──
+        modes = 0
+        if old_text is not None: modes += 1
+        if append is not None: modes += 1
+        if line is not None: modes += 1
+        if modes > 1:
+            return "不能同时使用多种编辑模式。请选一种：替换(old_text+new_text)、追加(append)、行编辑(line+line_content)。"
+        if old_text is not None and new_text is None:
+            return '替换模式需要 old_text 和 new_text 两个参数。要删除的话用 new_text=""。'
+        if line is not None and line_content is None and importance is None and when is None:
+            return "行编辑模式下需要提供 line_content（新内容）。"
+        if line_content is not None and line is None:
+            return "给了 line_content 但没给 line 行号。"
+        if old_text is None and append is None and line is None and importance is None and when is None and time is None:
+            return "没有要改的东西。至少提供一个编辑参数或修改时间/重要性/想起条件。"
 
-        if old_string is not None and new_string is None:
-            return 'Error: old_string provided without new_string. To delete a section, use new_string="".'
+        # ── 读取当前内容 ──
+        memory = await graph.get_memory_by_path(path, domain, namespace=get_namespace())
+        if not memory:
+            return f"没找到「{full_uri}」这条记忆。"
 
-        if new_string is not None and old_string is None:
-            return "Error: new_string provided without old_string. Both are required for patch mode."
-
-        # --- Resolve content for patch/append modes ---
+        current_content = memory.get("content", "")
         content = None
 
-        if old_string is not None:
-            # Patch mode: find and replace within existing content
-            if old_string == new_string:
-                return (
-                    "Error: old_string and new_string are identical. "
-                    "No change would be made."
-                )
+        if old_text is not None:
+            # 替换模式
+            if old_text == new_text:
+                return "old_text 和 new_text 一模一样，没任何变化。"
 
-            memory = await graph.get_memory_by_path(path, domain, namespace=get_namespace())
-            if not memory:
-                return f"Error: Memory at '{full_uri}' not found."
-
-            current_content = memory.get("content", "")
-            count = current_content.count(old_string)
-
+            count = current_content.count(old_text)
             if count > 1:
-                return (
-                    f"Error: old_string found {count} times in memory content at '{full_uri}'. "
-                    f"Provide more surrounding context to make it unique."
-                )
-
+                return f"「{old_text}」在记忆里出现了 {count} 次，无法确定替换哪个。多写点上下文让它唯一。"
             if count == 1:
-                content = current_content.replace(old_string, new_string, 1)
+                content = current_content.replace(old_text, new_text, 1)
             else:
-                # Exact match failed — try literal-newline normalization fallback.
-                # LLMs sometimes serialize multiline content with literal \n tokens
-                # instead of real newlines.  We normalize old_string and check whether
-                # the result uniquely matches the stored content.  This is validated
-                # against ground truth (the actual stored text), not a heuristic.
-                norm_old = normalize_literal_newlines(old_string) if "\\n" in old_string else None
-                if norm_old is not None and norm_old != old_string:
+                # 尝试 \\n 规范化
+                norm_old = normalize_literal_newlines(old_text) if "\\n" in old_text else None
+                if norm_old is not None and norm_old != old_text:
                     norm_count = current_content.count(norm_old)
                     if norm_count == 1:
-                        norm_new = normalize_literal_newlines(new_string) if new_string and "\\n" in new_string else new_string
+                        norm_new = normalize_literal_newlines(new_text) if new_text and "\\n" in new_text else new_text
                         content = current_content.replace(norm_old, norm_new, 1)
-                        for field_name, original, normalized in [
-                            ("old_string", old_string, norm_old),
-                            ("new_string", new_string, norm_new),
-                        ]:
-                            if original != normalized:
-                                orig_preview = format_normalization_preview(original)
-                                norm_preview = format_normalization_preview(normalized)
-                                notices.append(
-                                    f"[SYSTEM NOTICE]: Auto-normalized `{field_name}` — "
-                                    f"converted literal '\\n' sequences to real newlines "
-                                    f"because they matched the stored content.\n"
-                                    f"- Original: `{orig_preview}`\n"
-                                    f"- Normalized: `{norm_preview}`"
-                                )
 
                 if content is None:
-                    # Still no match — fall back to Unicode normalized comparison
-                    # (handles curly/straight quotes, dash variants, trailing
-                    # whitespace, and consecutive-space collapse).
-                    patched = try_normalized_patch(
-                        current_content, old_string, new_string
-                    )
+                    # 尝试 Unicode 标准化匹配
+                    patched = try_normalized_patch(current_content, old_text, new_text)
                     if patched is not None:
                         content = patched
-                    else:
-                        norm_content = normalize_with_positions(current_content)[0]
-                        total_valid = 0
-                        for _preserve in (True, False):
-                            _norm_old = normalize_with_positions(
-                                old_string, preserve_first_line_indent=_preserve
-                            )[0]
-                            if _norm_old:
-                                total_valid += len(find_valid_matches(
-                                    norm_content, _norm_old,
-                                    indent_collapsed=(not _preserve),
-                                ))
 
-                        if total_valid == 0:
-                            return (
-                                f"Error: old_string not found in memory content at "
-                                f"'{full_uri}', even after Unicode normalization "
-                                f"(quotes, dashes, whitespace). "
-                                f"Re-read the memory and copy the exact text."
-                            )
-                        
-                        return (
-                            f"Error: old_string found multiple times in "
-                            f"memory content at '{full_uri}' (after Unicode "
-                            f"normalization). Provide more surrounding context "
-                            f"to make it unique."
-                        )
+                if content is None:
+                    return f"在「{full_uri}」里没找到「{old_text}」。先 browse_memory 看看确切内容再试。"
 
             if content == current_content:
-                return (
-                    f"Error: Replacement produced identical content at '{full_uri}'. "
-                    f"The old_string was found but replacing it with new_string "
-                    f"resulted in no change. Check for subtle whitespace differences."
-                )
+                return "替换后内容和原来一模一样，没有变化。"
 
         elif append is not None:
-            # Reject empty append to avoid creating a no-op version
+            # 追加模式
             if not append:
-                return (
-                    f"Error: Empty append for '{full_uri}'. "
-                    f"Provide non-empty text to append."
-                )
-            # Append mode: add to end of existing content
-            memory = await graph.get_memory_by_path(path, domain, namespace=get_namespace())
-            if not memory:
-                return f"Error: Memory at '{full_uri}' not found."
-
-            current_content = memory.get("content", "")
+                return "追加的内容不能为空。"
             content = current_content + append
 
-        # Reject no-op requests where no valid update fields were provided.
-        # This catches malformed tool calls (e.g. oldString/newString instead
-        # of old_string/new_string) that previously returned a false "Success".
-        if content is None and priority is None and disclosure is None:
-            return (
-                f"Error: No update fields provided for '{full_uri}'. "
-                f"Use patch mode (old_string + new_string), append mode (append), "
-                f"or metadata fields (priority/disclosure)."
-            )
+        elif line is not None:
+            # 行编辑模式
+            lines = current_content.split("\n")
+            if line < 1 or line > len(lines):
+                return f"行号 {line} 超出范围。这个记忆一共有 {len(lines)} 行。"
+            lines[line - 1] = line_content
+            content = "\n".join(lines)
 
         result = await graph.update_memory(
             path=path,
             content=content,
-            priority=priority,
-            disclosure=disclosure,
+            priority=importance,
+            disclosure=when,
             domain=domain,
             namespace=get_namespace(),
+            world_timestamp=final_world_time,
         )
 
         _record_rows(
@@ -768,37 +791,34 @@ async def update_memory(
             after_state=result.get("rows_after", {}),
         )
 
-        message = f"Success: Memory at '{full_uri}' updated"
-        if notices:
-            message += "\n\n" + "\n\n".join(notices)
-        return message
+        msg = f"已经改好了：「{full_uri}」"
+        if final_world_time:
+            msg += f" (时间更新为: {final_world_time})"
+        return msg
 
     except ValueError as e:
-        return f"Error: {str(e)}"
+        return f"没改掉：{str(e)}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"没改掉：{str(e)}"
 
+
+# ── 删除 ──────────────────────────────────────────────────────────────────
 
 @write_tool()
-async def delete_memory(uri: str) -> str:
-    """
-    Deletes a memory by cutting its URI path. The path is permanently removed.
-    If the node has children, try deleting directly. If deletion would orphan
-    any children, the system will safely return a list of exactly which ones to handle first.
+async def forget_memory(uri: str) -> str:
+    """忘掉一段记忆。删除前会自动备份到 staging/ 目录。
 
-    PREREQUISITE: You MUST call read_memory(uri) and read the full content BEFORE deleting.
-    Judging by URI/title alone is insufficient. Read the content, confirm it is
-    truly obsolete/redundant/harmful, then delete.
+    删除的是这个 URI 路径下的记录。如果这个记忆还有其他入口
+    （别名），只拆掉这一个入口，内容还在。如果是最后一个入口，记忆本身也会被删除。
+
+    如果记忆下面还有子节点，得先把子节点清理掉才能删。
 
     Args:
-        uri: The URI to delete (e.g., "core://agent/old_note")
-
-    Returns:
-        Success or error message
+        uri: 要删除的 URI，如 "core://items/old_book"
 
     Examples:
-        delete_memory("core://agent/deprecated_belief")
-        delete_memory("writer://draft_v1")
+        forget_memory("core://observations/white_cat")
+        forget_memory("diary://0521_old")
     """
     graph = get_graph_service()
 
@@ -808,7 +828,7 @@ async def delete_memory(uri: str) -> str:
 
         memory = await graph.get_memory_by_path(path, domain, namespace=get_namespace())
         if not memory:
-            return f"Error: Memory at '{full_uri}' not found."
+            return f"没找到「{full_uri}」这条记忆。"
 
         result = await graph.remove_path(path, domain, namespace=get_namespace())
         rows_before = result.get("rows_before", {})
@@ -820,58 +840,51 @@ async def delete_memory(uri: str) -> str:
 
         deleted_path_count = len(rows_before.get("paths", []))
         descendant_count = max(0, deleted_path_count - 1)
-        msg = f"Success: Memory '{full_uri}' deleted."
+        msg = f"忘掉了「{full_uri}」"
         if descendant_count > 0:
-            msg += f" (Recursively removed {descendant_count} descendant path(s))"
+            msg += f"（连带清掉了 {descendant_count} 个子节点）"
 
         return msg
 
     except ValueError as e:
-        return f"Error: {str(e)}"
+        return f"没忘掉：{str(e)}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"没忘掉：{str(e)}"
 
+
+# ── 关联 ──────────────────────────────────────────────────────────────────
 
 @write_tool()
-async def add_alias(
-    new_uri: str, target_uri: str, priority: int, disclosure: str
+async def link_memory(
+    target_uri: str,
+    new_uri: str,
+    importance: int,
+    when: str,
 ) -> str:
-    """
-    Creates an alias URI pointing to the same memory as target_uri.
+    """同一条记忆多放一个入口。
 
-    This is NOT a copy. The alias and the original share the same Memory ID (same content).
-    Each alias has its own independent priority and disclosure.
-    Child nodes under target_uri are automatically mirrored under new_uri.
-    Do NOT manually create aliases for each child — they are inherited.
+    不是复制内容，只是在另一个位置开一扇门，指向同一条记忆。
+    两个入口共享内容——改一个另一个也跟着变。
+    子节点会自动继承，不用手动一个个加别名。
 
-    When to use:
-    - Reading node A would benefit from also knowing about existing memory B
-      → alias B under A. Same logic as create_memory's parent selection.
-    - Move/rename a memory: add_alias to new path, then delete_memory the old path.
-      NEVER delete+create to move — that loses the Memory ID and all associations.
+    什么时候用：
+    - 一件事放在 A 下面想不起来，但在 B 下面就能自然想到
+      → 在 B 下面加个别名指向 A
+    - 想给记忆搬家：先加别名指向新位置，再 forget_memory 老位置
 
     Args:
-        new_uri: New URI to create (alias)
-        target_uri: Existing URI to alias
-        priority: Relative priority for THIS alias path (lower = higher priority).
-                  REQUIRED — you must decide this yourself every time.
-                  Set by relevance to the parent's topic, not the memory's absolute importance.
-                  e.g., "database setup notes" → high priority under "deployment", low under "team_onboarding".
-        disclosure: Disclosure condition for THIS alias path.
-                  REQUIRED — you must write this yourself every time.
-
-    Returns:
-        Success message
+        target_uri: 已有的记忆（要被指向的目标）
+        new_uri: 新入口放哪里
+        importance: 从这个入口想起时的重要性
+        when: 从这入口什么时候会想起来
 
     Examples:
-        add_alias("core://timeline/2024/05/20", "core://agent/my_user/first_meeting", priority=1, disclosure="When I want to know how we start")
+        link_memory("core://events/0322_first_encounter", "core://observations/Tina", importance=1, when="当提到对缇娜的第一印象时")
+        link_memory("core://relationships/Tina", "core://observations/Tina", importance=3, when="当说起缇娜时")
     """
     graph = get_graph_service()
 
     try:
-        if priority < 0:
-            return "Error: priority must be >= 0."
-
         new_domain, new_path = parse_uri(new_uri)
         target_domain, target_path = parse_uri(target_uri)
 
@@ -880,8 +893,8 @@ async def add_alias(
             target_path=target_path,
             new_domain=new_domain,
             target_domain=target_domain,
-            priority=priority,
-            disclosure=disclosure,
+            priority=importance,
+            disclosure=when,
             namespace=get_namespace(),
         )
 
@@ -890,93 +903,45 @@ async def add_alias(
             after_state=result.get("rows_after", {}),
         )
 
-        msg = f"Success: Alias '{result['new_uri']}' now points to same memory as '{result['target_uri']}'"
-
-        created_paths = result.get("rows_after", {}).get("paths", [])
-        if len(created_paths) > 1:
-            child_paths = [
-                f"{p['domain']}://{p['path']}" 
-                for p in created_paths 
-                if f"{p['domain']}://{p['path']}" != result['new_uri']
-            ]
-            if child_paths:
-                msg += f"\n\nAutomatically inherited aliases for {len(child_paths)} descendant(s):\n"
-                for cp in child_paths[:10]:
-                    msg += f"- {cp}\n"
-                if len(child_paths) > 10:
-                    msg += f"... and {len(child_paths) - 10} more.\n"
-
-        node_uuid = result.get("node_uuid")
-        if node_uuid:
-            all_paths = await graph.get_paths_for_node(node_uuid, namespace=get_namespace())
-            new_parent_dir = "/".join(new_path.split("/")[:-1])
-            siblings = []
-            for p in all_paths:
-                if p["domain"] == new_domain:
-                    p_parent = "/".join(p["path"].split("/")[:-1])
-                    if p_parent == new_parent_dir:
-                        siblings.append(f"'{p['uri']}'")
-            
-            if len(siblings) > 1:
-                msg += (
-                    f"\n\n⚠ DUPLICATE SIBLING WARNING: This node now appears {len(siblings)} times "
-                    f"under the same parent directory: {', '.join(siblings)}.\n"
-                    f"If you are renaming/moving, delete the old path now.\n"
-                    f"If not, you probably created a redundant alias — consider removing one."
-                )
-
-        new_parent_uri = make_uri(new_domain, "/".join(new_path.split("/")[:-1]))
-        msg += (
-            f"\n\n[HOLD ON]: Do you know what '{new_parent_uri}' says? "
-            f"If you haven't read it this session, read_memory() it first. "
-            f"Then: does the aliased content conflict with ANY memory in your current context? "
-            f"If yes, use memory-audit-belief-duel skill to resolve it before continuing."
-        )
+        alias_uri = result.get("new_uri", new_uri)
+        msg = f"在「{alias_uri}」也能想起「{target_uri}」了。"
 
         return msg
 
     except ValueError as e:
-        return f"Error: {str(e)}"
+        return f"没加上：{str(e)}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"没加上：{str(e)}"
 
 
 @write_tool()
-async def manage_triggers(
+async def tag_memory(
     uri: str,
     add: Optional[List[str]] = None,
     remove: Optional[List[str]] = None,
 ) -> str:
-    """
-    Bind trigger words to a memory so it surfaces automatically during read_memory.
+    """给一段记忆贴上触发词标签。
 
-    Triggers are bound to the MEMORY NODE (Memory ID), NOT to any specific path.
-    All aliases of the same memory share the same set of triggers.
-    (Contrast with priority/disclosure, which are per-path.)
+    贴上标签后，当其他记忆的内容里出现这个词时，这条记忆会被
+    关联显示出来。
 
-    Mechanism: When a trigger word appears in ANY memory's content, read_memory
-    shows a glossary link to this target node at the bottom.
+    标签是和记忆内容绑定的（所有别名共享同一套标签），而不是和入口绑定的。
 
-    How to choose trigger words:
-    - The trigger word MUST already exist in some older memory's content.
-      You are borrowing a word from an existing text to hook a new memory onto it.
-    - Do NOT invent obscure placeholder words that appear nowhere in the memory library.
-    - Use SPECIFIC terms. Broad/generic words create noise.
-    - A node can have multiple triggers. Same trigger can point to multiple nodes.
-    - View all triggers: read_memory("system://glossary").
+    怎么选标签词：
+    - 这个词必须已经在某条旧记忆的内容里出现过
+    - 用具体的词，太宽泛的（比如「重要」「东西」）会产生大量噪音
+    - 一条记忆可以有多个标签，同一个词也可以指向多条记忆
+
+    查看所有标签：browse_memory("system://glossary")
 
     Args:
-        uri: Any URI that points to the target memory node (used to locate the node;
-             any alias of the same memory works identically)
-        add: List of trigger words to bind to this node (Optional)
-        remove: List of trigger words to unbind from this node (Optional)
-
-    Returns:
-        Current list of triggers for this node after changes.
+        uri: 要贴标签的记忆（任何别名都行，指向同一条记忆）
+        add: 要加的标签词列表（可选）
+        remove: 要删的标签词列表（可选）
 
     Examples:
-        manage_triggers("core://hazards/spa_fallback", add=["Nginx"])
-        manage_triggers("writer://story_world/factions", add=["Nuremberg", "Aether"])
+        tag_memory("core://identity/habits", add=["吃零食", "打游戏"])
+        tag_memory("core://events/0316_small_talk", remove=["旧的标签"])
     """
     graph = get_graph_service()
     glossary = get_glossary_service()
@@ -987,7 +952,7 @@ async def manage_triggers(
 
         memory = await graph.get_memory_by_path(path, domain, namespace=get_namespace())
         if not memory:
-            return f"Error: Memory at '{full_uri}' not found."
+            return f"没找到「{full_uri}」。"
 
         node_uuid = memory["node_uuid"]
 
@@ -996,13 +961,12 @@ async def manage_triggers(
             remove_set = {k.strip() for k in remove if k.strip()}
             overlap = add_set.intersection(remove_set)
             if overlap:
-                return f"Error: Cannot add and remove the same keywords simultaneously: {', '.join(sorted(overlap))}"
+                return f"不能同时添加和删除同一个词：{', '.join(sorted(overlap))}"
 
         added = []
         skipped_add = []
         removed = []
         skipped_remove = []
-
         before_state = {"glossary_keywords": []}
         after_state = {"glossary_keywords": []}
 
@@ -1037,87 +1001,461 @@ async def manage_triggers(
                     skipped_remove.append(kw)
 
         if added or removed:
-            from db.snapshot import get_changeset_store
             get_changeset_store().record_many(before_state, after_state)
 
         current = await glossary.get_glossary_for_node(node_uuid, namespace=get_namespace())
 
-        lines = [f"Keywords for '{full_uri}':"]
+        lines = [f"「{full_uri}」的标签："]
         if added:
-            lines.append(f"  Added: {', '.join(added)}")
+            lines.append(f"  加上了：{', '.join(added)}")
         if skipped_add:
-            lines.append(f"  Already existed (skipped): {', '.join(skipped_add)}")
+            lines.append(f"  已经有了（跳过）：{', '.join(skipped_add)}")
         if removed:
-            lines.append(f"  Removed: {', '.join(removed)}")
+            lines.append(f"  删掉了：{', '.join(removed)}")
         if skipped_remove:
-            lines.append(f"  Not found (skipped): {', '.join(skipped_remove)}")
+            lines.append(f"  本来就没有（跳过）：{', '.join(skipped_remove)}")
         if current:
-            lines.append(f"  Current: [{', '.join(current)}]")
+            lines.append(f"  现在是：{', '.join(current)}")
         else:
-            lines.append("  Current: (none)")
+            lines.append("  现在没有标签。")
 
         return "\n".join(lines)
 
     except ValueError as e:
-        return f"Error: {str(e)}"
+        return f"标签没改：{str(e)}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"标签没改：{str(e)}"
 
 
-@mcp.tool()
-async def search_memory(
-    query: str, domain: Optional[str] = None, limit: int = 10
+# ── 整理 ──────────────────────────────────────────────────────────────────
+
+@write_tool()
+async def merge_memories(
+    uris: List[str],
+    target_uri: str,
+    content: str,
+    reason: Optional[str] = None,
 ) -> str:
-    """
-    Search memories by path and content using full-text search.
+    """把多条记忆合并成一条。
 
-    Use this when you don't know the URI for a memory. Do NOT guess URIs.
-    This is lexical full-text search, NOT semantic search.
+    当你发现好几段记忆其实是在说同一件事的时候，就可以把它们合起来。
+    合并后源头记忆会被删除（自动备份到 staging/ 目录），
+    所有旧标签会集中到新记忆上。
+
+    步骤：
+    1. 读取所有源记忆
+    2. 用你写的新内容创建目标记忆
+    3. 把源记忆上的标签转移到目标
+    4. 删除源记忆（带备份）
 
     Args:
-        query: Search keywords (substring match)
-        domain: Optional domain filter (e.g., "core", "writer").
-                If not specified, searches all domains.
-        limit: Maximum results (default 10)
-
-    Returns:
-        List of matching memories with URIs and snippets
+        uris: 要合并的多条记忆 URI 列表
+        target_uri: 合并后放在哪里
+        content: 合并后的完整内容（你来总结）
+        reason: 为什么要合并（可选，会写在结果里方便以后回顾）
 
     Examples:
-        search_memory("job")                   # Search all domains
-        search_memory("chapter", domain="writer") # Search only writer domain
+        merge_memories(["core://events/0301_first_impression_Tina", "core://events/0302_small_talk_Tina"], "core://events/Tina", "缇娜这段时候给我留下了不错的印象……", reason="这几天的事都和缇娜有关")
     """
-    search = get_search_indexer()
+    graph = get_graph_service()
+    glossary = get_glossary_service()
 
     try:
-        # Validate domain if provided
-        valid = get_valid_domains()
-        if domain is not None and domain not in valid:
-            return f"Error: Unknown domain '{domain}'. Valid domains: {', '.join(valid)}"
+        if len(uris) < 2:
+            return "至少需要两条记忆才能合并。"
 
-        results = await search.search(query, limit, domain, namespace=get_namespace())
+        target_domain, target_path = parse_uri(target_uri)
+        namespace = get_namespace()
 
-        if not results:
-            scope = f"in '{domain}'" if domain else "across all domains"
-            return f"No matching memories found {scope}."
+        # 1. 读取所有源记忆
+        sources = []
+        source_glossary_keywords = []
+        for uri in uris:
+            domain, path = parse_uri(uri)
+            memory = await graph.get_memory_by_path(path, domain, namespace=namespace)
+            if not memory:
+                return f"没找到源记忆「{uri}」。"
+            sources.append((domain, path, memory))
+            # 收集标签
+            node_glossary = await glossary.get_glossary_for_node(memory["node_uuid"], namespace=namespace)
+            source_glossary_keywords.extend(node_glossary)
 
-        lines = [f"Found {len(results)} matches for '{query}':", ""]
+        # 2. 创建目标记忆
+        parent_path = "/".join(target_path.split("/")[:-1])
+        title_part = target_path.split("/")[-1]
 
-        for item in results:
-            uri = item.get(
-                "uri", make_uri(item.get("domain", DEFAULT_DOMAIN), item["path"])
-            )
-            lines.append(f"- {uri}")
-            lines.append(f"  Priority: {item['priority']}")
-            if item.get("disclosure"):
-                lines.append(f"  Disclosure: {item['disclosure']}")
-            lines.append(f"  {item['snippet']}")
-            lines.append("")
+        result = await graph.create_memory(
+            parent_path=parent_path,
+            content=content,
+            priority=3,
+            title=title_part,
+            disclosure="当需要回想合并后的事时",
+            domain=target_domain,
+            namespace=namespace,
+        )
 
-        return "\n".join(lines)
+        target_node_uuid = result.get("node_uuid")
+        created_uri = result.get("uri", make_uri(target_domain, result["path"]))
 
+        # 3. 转移标签到目标节点
+        if target_node_uuid and source_glossary_keywords:
+            added_keywords = set()
+            for kw in source_glossary_keywords:
+                if kw not in added_keywords:
+                    try:
+                        await glossary.add_glossary_keyword(kw, target_node_uuid, namespace=namespace)
+                        added_keywords.add(kw)
+                    except ValueError:
+                        pass
+
+        # 4. 删除源记忆（逐条删除）
+        deleted_sources = []
+        for domain, path, memory in sources:
+            full_uri = make_uri(domain, path)
+            try:
+                await graph.remove_path(path, domain, namespace=namespace)
+                deleted_sources.append(full_uri)
+            except Exception as e:
+                # 单条删除失败不阻断整体流程
+                pass
+
+        _record_rows(
+            before_state=result.get("rows_before", {}),
+            after_state=result.get("rows_after", {}),
+        )
+
+        msg = f"合并完成：{len(uris)} 条记忆 → 「{created_uri}」"
+        if reason:
+            msg += f"\n原因：{reason}"
+        if deleted_sources:
+            msg += f"\n已删除旧入口：{len(deleted_sources)} 条"
+        if source_glossary_keywords:
+            transferred = len(set(source_glossary_keywords))
+            msg += f"\n转移了 {transferred} 个标签到新记忆"
+
+        return msg
+
+    except ValueError as e:
+        return f"合并没成功：{str(e)}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"合并没成功：{str(e)}"
+
+
+@write_tool()
+async def organize_memory(
+    target_uri: str,
+    source_uris: List[str],
+    content: str,
+    mode: str = "move",
+    importance: int = 3,
+    when: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """把几段相关的记忆整理成一个主题。
+
+    当你发现几段零散的记忆其实属于同一个主题时，可以用这个工具
+    把它们归纳到一起。有三种整理方式：
+
+    - move（默认）：创建主题摘要，把源记忆放到主题下，再删掉源入口
+    - link：创建主题摘要，给源记忆加一个主题下的入口，保留原位置
+    - keep：只创建主题摘要，不动源记忆
+
+    Args:
+        target_uri: 主题放在哪里
+        source_uris: 要整理的相关记忆
+        content: 主题总结（你对这个主题的整体理解）
+        mode: 整理方式——"move"、"link" 或 "keep"（默认 move）
+        importance: 主题的重要性（默认 3）
+        when: 什么时候会想到这个主题
+        tags: 可选，给主题加上标签词
+
+    Examples:
+        organize_memory("core://话题/关于他", ["core://碎片/对话1", "core://碎片/他说过的话"], "我对他的整体印象……", mode="move", tags=["他", "朋友"])
+    """
+    graph = get_graph_service()
+    glossary = get_glossary_service()
+
+    try:
+        if not source_uris:
+            return "至少需要一条源记忆来整理。"
+
+        if mode not in ("move", "link", "keep"):
+            return "mode 必须是 move、link 或 keep。"
+
+        target_domain, target_path = parse_uri(target_uri)
+        namespace = get_namespace()
+
+        # 确定主题的父路径和标题
+        parent_path = "/".join(target_path.split("/")[:-1]) if "/" in target_path else ""
+        title_part = target_path.split("/")[-1]
+
+        # 1. 创建主题总结节点
+        result = await graph.create_memory(
+            parent_path=parent_path,
+            content=content,
+            priority=importance,
+            title=title_part,
+            disclosure=when or f"当说到{title_part}时",
+            domain=target_domain,
+            namespace=namespace,
+        )
+
+        target_node_uuid = result.get("node_uuid")
+        topic_uri = result.get("uri", make_uri(target_domain, result["path"]))
+
+        # 2. 给主题加标签
+        if tags and target_node_uuid:
+            for kw in tags:
+                kw = kw.strip()
+                if kw:
+                    try:
+                        await glossary.add_glossary_keyword(kw, target_node_uuid, namespace=namespace)
+                    except ValueError:
+                        pass
+
+        # 3. 处理源记忆
+        linked = 0
+        moved = 0
+        for src_uri in source_uris:
+            src_domain, src_path = parse_uri(src_uri)
+            src_basename = src_path.split("/")[-1]
+            # 源记忆成为主题的子节点
+            child_path = f"{target_path}/{src_basename}"
+
+            try:
+                await graph.add_path(
+                    new_path=child_path,
+                    target_path=src_path,
+                    new_domain=target_domain,
+                    target_domain=src_domain,
+                    priority=importance + 1,
+                    disclosure=when or f"当说起{src_basename}时",
+                    namespace=namespace,
+                )
+                linked += 1
+
+                if mode == "move":
+                    await graph.remove_path(src_path, src_domain, namespace=namespace)
+                    moved += 1
+
+            except Exception:
+                pass
+
+        _record_rows(
+            before_state={},
+            after_state=result.get("rows_after", {}),
+        )
+
+        msg_parts = [f"整理好了：「{topic_uri}」"]
+        if linked:
+            msg_parts.append(f"  关联了 {linked} 条记忆到主题下")
+        if moved:
+            msg_parts.append(f"  移除了 {moved} 个旧入口")
+        if tags:
+            msg_parts.append(f"  标签：{', '.join(tags)}")
+
+        return "\n".join(msg_parts)
+
+    except ValueError as e:
+        return f"没整理好：{str(e)}"
+    except Exception as e:
+        return f"没整理好：{str(e)}"
+
+
+# ── 存档 ──────────────────────────────────────────────────────────────────
+
+@write_tool()
+async def archive_memory(
+    title: str,
+    history: str,
+    mode: str = "char",
+    raw: Optional[str] = None,
+    time: Optional[str] = None,
+) -> str:
+    """把刚才发生的事存档到历史记录里。
+
+    每轮对话或场景结束后，用这个工具把发生了什么记到 history 域。
+    之后就可以通过「system://wakeup」来回想最近发生的事。
+
+    Args:
+        title: 场景的简短标题（如 "tavern_brawl" 或 "meet_tina"）。
+               只能包含字母、数字、下划线和连字符。这会成为记忆的路径。
+        history: 场景摘要。整理过的、这段场景里发生了什么。
+        mode: "char"（角色视角）或 "gm"（GM视角），默认 "char"。
+        raw: 原始记录。可选，完整的对话或事件记录。
+        time: 可选。存档对应的世界时间（如 "2024-06-01" 或 "-1d"）。默认使用当前世界时间。
+    """
+    graph = get_graph_service()
+
+    try:
+        import re
+        namespace = get_namespace()
+
+        if not history.strip():
+            return "history 不能为空。写一下刚才发生了什么。"
+            
+        if not title or not re.match(r"^[a-zA-Z0-9_-]+$", title):
+            return "title 必须提供，且只能包含字母、数字、连字符和下划线（如 'first_encounter'）。"
+
+        # --- 世界时间处理 ---
+        config = get_config()
+        clock = config.get("world_clock", {})
+        current_world_time = clock.get("current_time")
+
+        final_world_time = None
+        if time:
+            from system_views import parse_relative_offset
+            offset_date = parse_relative_offset(time, current_world_time)
+            final_world_time = offset_date or time
+        elif current_world_time:
+            final_world_time = current_world_time
+
+        # 写入 history 域（统一放在 scenes/ 目录下保持整洁）
+        await graph.create_memory(
+            parent_path="scenes",
+            content=history,
+            priority=5,
+            title=title,
+            disclosure="当回顾最近经历时",
+            domain="history",
+            namespace=namespace,
+            world_timestamp=final_world_time, 
+        )
+
+        if raw and raw.strip():
+            await graph.create_memory(
+                parent_path="scenes",
+                content=raw,
+                priority=5,
+                title=f"{title}_raw",
+                disclosure="",
+                domain="history_raw",
+                namespace=namespace,
+                world_timestamp=final_world_time, 
+            )
+
+        msg = f"场景已存档（{mode}）：history://scenes/{title}"
+        if final_world_time:
+            msg += f" (世界时间: {final_world_time})"
+            
+        return msg
+
+    except ValueError as e:
+        return f"存档失败：{str(e)}"
+    except Exception as e:
+        return f"存档失败：{str(e)}"
+
+# ── 回顾 ──────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def recent_memories(limit: int = 10, domain: Optional[str] = None) -> str:
+    """看看最近发生了什么——最近改过的记忆。
+
+    列出最近新增或修改的记忆，按时间倒序。
+    可以用来快速回顾最近你在想什么、记了什么。
+
+    Args:
+        limit: 最多显示多少条（默认 10，最多 50）
+        domain: 可选，只看某个域名的（如 "core"）
+
+    Examples:
+        recent_memories()           # 最近 10 条
+        recent_memories(20)          # 最近 20 条
+        recent_memories(domain="core")  # 只看核心记忆
+    """
+    try:
+        return await generate_recent_memories_view(limit)
+    except Exception as e:
+        return f"获取最近记忆失败：{str(e)}"
+
+
+@write_tool()
+async def boot_memory(
+    action: str,
+    uris: Optional[List[str]] = None,
+) -> str:
+    """管理「醒来记忆」——你醒来时最先想起的事。
+
+    「醒来记忆」是你每次重新进入世界时最先看到的记忆，
+    相当于你放在床头的东西。
+
+    action 操作：
+    - list：查看当前的醒来记忆列表
+    - set：完全替换成新的列表
+    - add：在现有列表末尾加上一条
+    - remove：从列表中移除一条
+
+    Args:
+        action: "list" | "set" | "add" | "remove"
+        uris: set/add/remove 时要操作的 URI 列表
+
+    Examples:
+        boot_memory("list")                    # 看看现在记得什么
+        boot_memory("add", ["core://identity"])  # 把这件事放在床头
+        boot_memory("remove", ["core://events/0211_hot_coffee"])   # 不再自动想起了
+        boot_memory("set", ["core://最重要的", "core://第二重要的"])  # 重新排
+    """
+    preset = get_preset_service()
+
+    try:
+        namespace = get_namespace()
+
+        if action == "list":
+            current = await preset.get_boot_uris(namespace=namespace)
+            if not current:
+                return "现在没有设置醒来记忆。用 boot_memory('add', [...]) 来设置。"
+            lines = [f"醒来时会想起 {len(current)} 件事：", ""]
+            for i, uri in enumerate(current, 1):
+                lines.append(f"{i}. {uri}")
+            # 读取内容预览
+            graph = get_graph_service()
+            for i, uri in enumerate(current, 1):
+                try:
+                    domain, path = parse_uri(uri)
+                    memory = await graph.get_memory_by_path(path, domain, namespace=namespace)
+                    if memory and memory.get("content"):
+                        snippet = memory["content"].strip()[:100].replace("\n", " ")
+                        lines.append(f"   → {snippet}…" if len(memory["content"]) > 100 else f"   → {snippet}")
+                except Exception:
+                    pass
+            return "\n".join(lines)
+
+        elif action == "set":
+            if not uris:
+                return "set 操作需要提供 uris 列表。"
+            await preset.set_boot_uris(namespace=namespace, uris=uris)
+            return f"醒来记忆已设为 {len(uris)} 条。"
+
+        elif action == "add":
+            if not uris:
+                return "add 操作需要提供 uris 列表。"
+            current = await preset.get_boot_uris(namespace=namespace)
+            existing = set(current)
+            added = [u for u in uris if u not in existing]
+            if not added:
+                return "这些 URI 已经在醒来记忆里了。"
+            current.extend(added)
+            await preset.set_boot_uris(namespace=namespace, uris=current)
+            return f"加上了 {len(added)} 条醒来记忆。"
+
+        elif action == "remove":
+            if not uris:
+                return "remove 操作需要提供 uris 列表。"
+            current = await preset.get_boot_uris(namespace=namespace)
+            remove_set = set(uris)
+            remaining = [u for u in current if u not in remove_set]
+            if len(remaining) == len(current):
+                return "这些 URI 不在醒来记忆列表里。"
+            await preset.set_boot_uris(namespace=namespace, uris=remaining)
+            return f"移除了 {len(current) - len(remaining)} 条醒来记忆。"
+
+        else:
+            return "action 必须是 list、set、add 或 remove。"
+
+    except ValueError as e:
+        return f"没改掉：{str(e)}"
+    except Exception as e:
+        return f"没改掉：{str(e)}"
 
 
 # =============================================================================

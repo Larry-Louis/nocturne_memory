@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from db import get_graph_service, get_glossary_service
 from db.namespace import get_namespace
 from locales import t
+import re
+from datetime import date
 
 
 async def fetch_and_format_memory(uri: str, track_access: bool = False) -> str:
@@ -23,8 +25,7 @@ async def fetch_and_format_memory(uri: str, track_access: bool = False) -> str:
     Fetch memory data and return a formatted string.
     Used by read_memory tool and boot view.
     """
-    from mcp_server import parse_uri, make_uri, DEFAULT_DOMAIN
-
+    from mcp_server import parse_uri, make_uri, DEFAULT_DOMAIN, get_config
     graph = get_graph_service()
     glossary = get_glossary_service()
     domain, path = parse_uri(uri)
@@ -56,38 +57,32 @@ async def fetch_and_format_memory(uri: str, track_access: bool = False) -> str:
     disp_domain = memory.get("domain", DEFAULT_DOMAIN)
     disp_path = memory.get("path", "unknown")
     disp_uri = make_uri(disp_domain, disp_path)
+    lines.append(f"# [{disp_uri}]")
 
-    lines.append("=" * 60)
-    lines.append("")
-    lines.append(f"MEMORY: {disp_uri}")
-    lines.append(f"Memory ID: {memory.get('id')}")
-    lines.append(f"Other Aliases: {memory.get('alias_count', 0)}")
-    lines.append(f"Priority: {memory.get('priority', 0)}")
-    
-    created_at = memory.get("created_at")
-    if created_at:
-        try:
-            dt = datetime.fromisoformat(created_at)
-            lines.append(f"Last Modified: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
-        except Exception:
-            lines.append(f"Last Modified: {created_at}")
-    else:
-        lines.append("Last Modified: (unknown)")
+    # --- World Time Context ---
+    config = get_config()
+    world_clock = config.get("world_clock", {})
+    curr_world_time = world_clock.get("current_time")
+    mem_world_time = memory.get("world_timestamp")
+
+    if curr_world_time:
+        if mem_world_time:
+            rel_str = calculate_relative_world_time(mem_world_time, curr_world_time)
+            if rel_str:
+                lines.append(f"> (发生于: {mem_world_time}，{rel_str})")
+            else:
+                lines.append(f"> (发生于: {mem_world_time})")
 
     disclosure = memory.get("disclosure")
     if disclosure:
-        lines.append(f"Disclosure: {disclosure}")
-    else:
-        lines.append("Disclosure: (not set)")
+        lines.append(f"> (想起条件: {disclosure})")
 
     node_keywords = await glossary.get_glossary_for_node(memory["node_uuid"], namespace=get_namespace())
     if node_keywords:
-        lines.append(f"Keywords: [{', '.join(node_keywords)}]")
-    else:
-        lines.append("Keywords: (none)")
+        lines.append(f"> (标签: {', '.join(node_keywords)})")
 
     lines.append("")
-    lines.append("=" * 60)
+    lines.append("---")
     lines.append("")
 
     content = memory.get("content", "(empty)")
@@ -118,21 +113,16 @@ async def fetch_and_format_memory(uri: str, track_access: bool = False) -> str:
                     lines_to_add.append(f"- {kw_str} -> {target_uri}")
 
             if lines_to_add:
-                lines.append("=" * 60)
-                lines.append("")
-                lines.append("GLOSSARY (keywords detected in this content)")
-                lines.append("")
+                lines.append("---")
+                lines.append("相关联想:")
                 lines.extend(lines_to_add)
                 lines.append("")
     except Exception:
         pass
 
     if children:
-        lines.append("=" * 60)
-        lines.append("")
-        lines.append("CHILD MEMORIES (Use 'read_memory' with URI to access)")
-        lines.append("")
-        lines.append("=" * 60)
+        lines.append("---")
+        lines.append("更深层的记忆:")
         lines.append("")
 
         for child in children:
@@ -141,18 +131,11 @@ async def fetch_and_format_memory(uri: str, track_access: bool = False) -> str:
             child_uri = make_uri(child_domain, child_path)
 
             child_disclosure = child.get("disclosure")
-            snippet = child.get("content_snippet", "")
-
-            lines.append(f"- URI: {child_uri}  ")
-            lines.append(f"  Priority: {child.get('priority', 0)}  ")
-
+            
             if child_disclosure:
-                lines.append(f"  When to recall: {child_disclosure}  ")
+                lines.append(f"- {child_uri} ({child_disclosure})")
             else:
-                lines.append("  When to recall: (not set)  ")
-                lines.append(f"  Snippet: {snippet}  ")
-
-            lines.append("")
+                lines.append(f"- {child_uri}")
 
     return "\n".join(lines)
 
@@ -173,26 +156,31 @@ async def generate_boot_memory_view(core_memory_uris: List[str]) -> str:
             failed.append(f"- {uri}: {str(e)}")
 
     output_parts = []
+    from mcp_server import get_config
+    config = get_config()
+    world_clock = config.get("world_clock", {})
+    curr_world_time = world_clock.get("current_time")
 
-    output_parts.append("# Core Memories")
-    output_parts.append(f"# Loaded: {loaded}/{len(core_memory_uris)} memories")
+    output_parts.append("# 核心记忆 (Core Memories)")
+    if curr_world_time:
+        output_parts.append(f"> 当前世界时间: {curr_world_time}")
+    output_parts.append(f"> 载入状态: {loaded}/{len(core_memory_uris)} 条记忆已浮现")
     output_parts.append("")
 
     if failed:
-        output_parts.append("## Failed to load:")
+        output_parts.append("## 载入失败:")
         output_parts.extend(failed)
         output_parts.append("")
 
     if results:
-        output_parts.append("## Contents:")
+        output_parts.append("## 记忆内容:")
         output_parts.append("")
         output_parts.append(
-            "For a memory index, use: system://index/<domain> (e.g. system://index/core)"
+            "(索引建议: system://index/<domain>；近期回顾: system://recent)"
         )
-        output_parts.append("For recent memories, use: system://recent")
         output_parts.extend(results)
     else:
-        output_parts.append("(No core memories loaded. Run migration first.)")
+        output_parts.append("(目前没有核心记忆浮现。)")
 
     try:
         recent_view = await generate_recent_memories_view(limit=5)
@@ -210,14 +198,12 @@ async def generate_memory_index_view(domain_filter: Optional[str] = None) -> str
     """
     Generate a memory index view.
 
-    Public callers should use `system://index/<domain>`. Passing `None`
     keeps the helper usable for internal all-domain views.
 
     Node-centric: each conceptual entity (node_uuid) appears once per domain,
     with aliases within the same domain folded underneath its primary path.
     """
-    from mcp_server import DEFAULT_DOMAIN, make_uri
-
+    from mcp_server import make_uri, DEFAULT_DOMAIN
     graph = get_graph_service()
 
     try:
@@ -252,50 +238,36 @@ async def generate_memory_index_view(domain_filter: Optional[str] = None) -> str
 
         unique_nodes_count = len(set(nid for _, nid in node_groups.keys()))
         lines = [
-            "# Memory Index",
-            f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Domain Filter: {domain_filter}"
-            if domain_filter
-            else "# Domain Filter: None (All Domains)",
-            f"# Total: {unique_nodes_count} unique nodes",
-            "#",
-            "# \u26a0\ufe0f ATTENTION (LLM):",
-            "# This index ONLY shows ONE primary path per memory node.",
-            "# Other aliases, triggers, and child nodes located under those hidden aliases ARE NOT SHOWN HERE.",
-            "# DO NOT assume the children shown here are the ONLY children of a node.",
-            "# To see ALL paths, aliases, and triggers for a specific memory, you MUST use `read_memory()` on its URI.",
-            "#",
-            "# Legend: [#ID] = Memory ID, [\u2605N] = priority (lower = higher)",
+            "# 记忆索引 (Memory Index)",
+            f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"> 领域过滤: {domain_filter}" if domain_filter else "> 领域过滤: 全部",
+            f"> 总计: {unique_nodes_count} 个概念节点",
             "",
         ]
 
         for domain_name in sorted(domains.keys()):
             if domain_filter and domain_name != domain_filter:
                 continue
-            lines.append("# " + "\u2550" * 38)
-            lines.append(f"# DOMAIN: {domain_name}://")
-            lines.append("# " + "\u2550" * 38)
+            lines.append("---")
+            lines.append(f"## 领域: {domain_name}://")
             lines.append("")
 
             for group_name in sorted(domains[domain_name].keys()):
-                lines.append(f"## {group_name}")
+                lines.append(f"### {group_name}")
                 for primary in sorted(
                     domains[domain_name][group_name],
                     key=lambda x: x["path"],
                 ):
                     uri = primary.get("uri", make_uri(domain_name, primary["path"]))
                     priority = primary.get("priority", 0)
-                    memory_id = primary.get("memory_id", "?")
                     imp_str = f" [\u2605{priority}]"
-                    lines.append(f"  - {uri} [#{memory_id}]{imp_str}")
+                    lines.append(f"- {uri}{imp_str}")
                 lines.append("")
 
         return "\n".join(lines)
 
     except Exception as e:
         return t("system.error_index").format(error=str(e))
-
-
 async def generate_recent_memories_view(limit: int = 10) -> str:
     """
     Generate a view of recently modified memories (system://recent).
@@ -309,15 +281,15 @@ async def generate_recent_memories_view(limit: int = 10) -> str:
         results = await graph.get_recent_memories(limit=limit, namespace=get_namespace())
 
         lines = []
-        lines.append("# Recently Modified Memories")
-        lines.append(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("# 最近修改的记忆 (Recently Modified)")
+        lines.append(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(
-            f"# Showing: {len(results)} most recent entries (requested: {limit})"
+            f"> 显示范围: 最近 {len(results)} 条记录"
         )
         lines.append("")
 
         if not results:
-            lines.append("(No memories found.)")
+            lines.append("(没有找到相关的记忆。)")
             return "\n".join(lines)
 
         for i, item in enumerate(results, 1):
@@ -331,15 +303,14 @@ async def generate_recent_memories_view(limit: int = 10) -> str:
             else:
                 modified = raw_ts or "unknown"
 
-            imp_str = f"\u2605{priority}"
+            imp_str = f"[\u2605{priority}]"
 
-            lines.append(f"{i}. {uri}  [{imp_str}]  modified: {modified}")
+            lines.append(f"{i}. {uri} {imp_str} (修改时间: {modified})")
             if disclosure:
-                lines.append(f"   disclosure: {disclosure}")
+                lines.append(f"   想起条件: {disclosure}")
             else:
-                lines.append("   disclosure: (NOT SET \u2014 consider adding one)")
+                lines.append("   想起条件: (未设置)")
             lines.append("")
-
         return "\n".join(lines)
 
     except Exception as e:
@@ -366,17 +337,17 @@ async def generate_glossary_index_view() -> str:
                 })
 
         lines = [
-            "# Glossary Index",
-            f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Total: {len(entries)} keywords",
+            "# 标签/触发词索引 (Glossary Index)",
+            f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"> 总计: {len(entries)} 个关键词",
             "",
         ]
 
         if not entries:
-            lines.append("(No glossary keywords defined yet.)")
+            lines.append("(目前还没有设置任何标签。)")
             lines.append("")
             lines.append(
-                "Use manage_triggers(uri, add=[...]) to bind trigger words to memory nodes."
+                "提示：可以使用 tag_memory(uri, add=['关键词']) 来为记忆添加关联词。"
             )
             return "\n".join(lines)
 
@@ -394,13 +365,310 @@ async def generate_glossary_index_view() -> str:
         return t("system.error_glossary").format(error=str(e))
 
 
+async def generate_wakeup_view(boot_uris: List[str], history_limit: int = 5) -> str:
+    """Generate the system wakeup view (system://wakeup)."""
+    graph = get_graph_service()
+    ns = get_namespace()
+    sections: List[str] = []
+    
+    # 1. BOOT MEMORIES
+    boot_blocks = []
+    for uri in boot_uris:
+        formatted = await _format_memory_clean(uri, ns, graph, max_children=3)
+        if formatted:
+            boot_blocks.append(formatted)
+    if boot_blocks:
+        sections.append("\n".join(boot_blocks).strip())
+        
+    # 2. RECENT CORE INDEX
+    recent_core = await _format_recent_core_index_clean(ns, graph, limit=5)
+    if recent_core:
+        sections.append("## 最近动态\n" + "\n".join(recent_core))
+        
+    # 3. RECENT HISTORY SUMMARIES
+    history_blocks = await _format_recent_domain_clean("history", ns, graph, history_limit)
+    if history_blocks:
+        sections.append("## 最近场景\n" + "\n---\n\n".join(history_blocks))
+        
+    # 4. LATEST HISTORY_RAW
+    raw_blocks = await _format_recent_domain_clean("history_raw", ns, graph, 1)
+    if raw_blocks:
+        sections.append("## 最近场景记录\n" + "\n".join(raw_blocks))
+        
+    if sections:
+            sections = _deduplicate_boot_content(sections, boot_uris)
+        
+    return "\n\n---\n\n".join(sections)
+
+
+async def _format_memory_clean(uri: str, ns: str, graph, max_children: int = 3) -> str:
+    """Format one memory in clean style: ### uri, disclosure, content, children."""
+    from mcp_server import parse_uri, make_uri, DEFAULT_DOMAIN, get_config
+    domain, mem_path = parse_uri(uri)
+    if not domain:
+        domain = DEFAULT_DOMAIN
+    
+    detail = await graph.get_memory_by_path(mem_path, domain, namespace=ns)
+    if not detail:
+        return ""
+    
+    content = detail.get("content", "")
+    if not content:
+        return ""
+    
+    disp_domain = detail.get("domain", domain)
+    disp_path = detail.get("path", mem_path)
+    disp_uri = make_uri(disp_domain, disp_path)
+    disclosure = detail.get("disclosure")
+    config = get_config()
+    world_clock = config.get("world_clock", {})
+    curr_world_time = world_clock.get("current_time")
+    mem_world_time = detail.get("world_timestamp")
+
+    lines: List[str] = []
+    lines.append(f"### {disp_uri}")
+
+    if curr_world_time:
+        if mem_world_time:
+            rel_str = calculate_relative_world_time(mem_world_time, curr_world_time)
+            if rel_str:
+                lines.append(f"> (发生于: {mem_world_time}，{rel_str})")
+            else:
+                lines.append(f"> (发生于: {mem_world_time})")
+
+    if disclosure:
+        lines.append(f"> 什么时候想起：{disclosure}\n")
+    lines.append(content)
+    lines.append("")
+    
+    # Children as snippets
+    if max_children > 0:
+        children = await graph.get_children(
+            detail.get("node_uuid"),
+            context_domain=domain,
+            context_path=mem_path,
+            namespace=ns,
+        )
+        if children:
+            for child in children[:max_children]:
+                child_domain = child.get("domain", domain)
+                child_path = child.get("path", "")
+                child_uri = make_uri(child_domain, child_path)
+                child_disc = child.get("disclosure")
+                snippet = (child.get("content_snippet") or "").replace("\n", " ").strip()
+                disc_str = f" ({child_disc})" if child_disc else ""
+                snip_str = f" — {snippet}" if snippet else ""
+                lines.append(f"- {child_uri}{disc_str}{snip_str}")
+            lines.append("")
+    
+    return "\n".join(lines)
+
+
+async def _format_recent_domain_clean(domain: str, ns: str, graph, limit: int) -> List[str]:
+    """Get recent entries from a domain, formatted clean."""
+    from mcp_server import make_uri, DEFAULT_DOMAIN, get_config
+    all_paths = await graph.get_all_paths(namespace=ns)
+    
+    # Deduplicate by node_uuid
+    items = []
+    seen = set()
+    for item in all_paths:
+        if item.get("domain", DEFAULT_DOMAIN) != domain:
+            continue
+        nid = item.get("node_uuid", "")
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        items.append(item)
+    
+    # Fetch details
+    detailed = []
+    for item in items:
+        try:
+            p = item.get("path", "")
+            uri = item.get("uri") or make_uri(domain, p)
+            detail = await graph.get_memory_by_path(p, domain, namespace=ns)
+            if detail:
+                detailed.append({
+                    "uri": uri,
+                    "path": p,
+                    "content": detail.get("content", ""),
+                    "disclosure": detail.get("disclosure"),
+                    "created_at": detail.get("created_at", ""),
+                    "world_timestamp": detail.get("world_timestamp"),
+                    "node_uuid": detail.get("node_uuid"),
+                })
+        except Exception:
+            continue
+    
+    # Sort by created_at DESC
+    detailed.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    
+    # Format output
+    result = []
+    for entry in detailed[:limit]:
+        lines: List[str] = []
+        config = get_config()
+        world_clock = config.get("world_clock", {})
+        curr_world_time = world_clock.get("current_time")
+        mem_world_time = entry.get("world_timestamp")
+
+        lines: List[str] = []
+        lines.append(f"### {entry['uri']}")
+
+        if curr_world_time:
+            if mem_world_time:
+                rel_str = calculate_relative_world_time(mem_world_time, curr_world_time)
+                if rel_str:
+                    lines.append(f"> (发生于: {mem_world_time}，{rel_str})")
+                else:
+                    lines.append(f"> (发生于: {mem_world_time})")
+
+        if entry.get("disclosure"):
+            lines.append(f"> {entry['disclosure']}")
+        lines.append(entry["content"])
+        result.append("\n".join(lines))
+    
+    return result
+
+
+async def _format_recent_core_index_clean(ns: str, graph, limit: int = 5) -> List[str]:
+    """Recent core memories as compact index lines."""
+    from mcp_server import make_uri, DEFAULT_DOMAIN
+    all_paths = await graph.get_all_paths(namespace=ns)
+    
+    # Deduplicate by node_uuid
+    core_items = []
+    seen = set()
+    for item in all_paths:
+        if item.get("domain", DEFAULT_DOMAIN) != "core":
+            continue
+        nid = item.get("node_uuid", "")
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        core_items.append(item)
+    
+    # Fetch details for sorting
+    detailed = []
+    for item in core_items:
+        try:
+            p = item.get("path", "")
+            uri = item.get("uri") or make_uri("core", p)
+            detail = await graph.get_memory_by_path(p, "core", namespace=ns)
+            if detail:
+                detailed.append({
+                    "uri": uri,
+                    "disclosure": detail.get("disclosure"),
+                    "content_snippet": (detail.get("content", "") or "").replace("\n", " ").strip()[:120],
+                    "created_at": detail.get("created_at", ""),
+                })
+        except Exception:
+            continue
+    
+    detailed.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    
+    lines: List[str] = []
+    for entry in detailed[:limit]:
+        disc = f" ({entry['disclosure']})" if entry.get("disclosure") else ""
+        snippet = f" — {entry['content_snippet']}" if entry.get("content_snippet") else ""
+        lines.append(f"- {entry['uri']}{disc}{snippet}")
+    
+    return lines
+
+def _deduplicate_boot_content(blocks: List[str], boot_uris: List[str] = None) -> List[str]:
+    """
+    去重逻辑：如果某个节点已经作为完整的 boot memory (### URI) 被拉取，
+    则在其父节点的 children 列表 (- URI) 或近期动态中隐藏它的 snippet，避免重复显示。
+    """
+    full_uris = set(boot_uris) if boot_uris else set()
+
+    # 1. 收集所有作为完整块渲染的 URI
+    for block in blocks:
+        for line in block.split('\n'):
+            if line.startswith('### '):
+                uri_line = line[4:].strip()
+                # 提取 URI（按空格分割取第一部分）
+                parts = uri_line.split()
+                if parts:
+                    full_uris.add(parts[0])
+
+    # 2. 过滤掉作为子节点列表或索引出现的重复 URI
+    clean_blocks = []
+    for block in blocks:
+        filtered_lines = []
+        for line in block.split('\n'):
+            if not line.startswith('- '):
+                filtered_lines.append(line)
+                continue
+
+            # 使用正则匹配列表项中的 URI
+            match = re.match(r"^- (\S+)", line)
+            if match and match.group(1) in full_uris:
+                # 如果这个 URI 已经在全量集合里了，跳过该行的 snippet
+                continue
+            
+            filtered_lines.append(line)
+        
+        # 重新组合 block，如果过滤后全为空白则丢弃
+        clean_block = "\n".join(filtered_lines)
+        if clean_block.strip():
+            clean_blocks.append(clean_block)
+
+    return clean_blocks
+
+async def generate_memory_slot_view(slot_type: str, boot_uris: List[str] = None) -> str:
+    """Generate individual sections for Pi preset slots."""
+    graph = get_graph_service()
+    ns = get_namespace()
+    
+    from mcp_server import get_config
+    config = get_config()
+    world_clock = config.get("world_clock", {})
+    curr_world_time = world_clock.get("current_time")
+
+    if slot_type == "boot":
+        blocks = []
+        if curr_world_time:
+            blocks.append(f"> 当前世界时间: {curr_world_time}")
+
+        if boot_uris:
+            for uri in boot_uris:
+                formatted = await _format_memory_clean(uri, ns, graph, max_children=3)
+                if formatted:
+                    blocks.append(formatted)
+
+        recent_core = await _format_recent_core_index_clean(ns, graph, limit=5)
+        if recent_core:
+            blocks.append("## 最近动态\n" + "\n".join(recent_core))
+        
+        # --- 增加去重逻辑 ---
+        blocks = _deduplicate_boot_content(blocks, boot_uris)
+        
+        return "\n\n---\n\n".join(blocks)
+
+    elif slot_type == "history":
+        history_blocks = await _format_recent_domain_clean("history", ns, graph, limit=5)
+        if history_blocks:
+            return "## 最近场景\n" + "\n---\n\n".join(history_blocks)
+        return ""
+        
+    elif slot_type == "state":
+        raw_blocks = await _format_recent_domain_clean("history_raw", ns, graph, limit=1)
+        if raw_blocks:
+            return "## 最近场景记录\n" + "\n".join(raw_blocks)
+        return ""
+        
+    return f"Unknown slot type: {slot_type}"
+
 async def generate_diagnostic_view(domain: str, days_stale: int = 30, max_children: int = 10) -> str:
     """Generate a diagnostic report of the memory graph (system://diagnostic/<domain>)."""
     graph = get_graph_service()
 
     try:
+        priority_thresholds = {0: 3, 1: 7, 2: 14}
         diagnostics = await graph.get_diagnostics(
-            namespace=get_namespace(), days_stale=days_stale, max_children=max_children, domain=domain
+            namespace=get_namespace(), days_stale=days_stale, max_children=max_children, priority_thresholds=priority_thresholds, domain=domain
         )
 
         stale_nodes = diagnostics.get("stale_nodes", [])
@@ -421,7 +689,7 @@ async def generate_diagnostic_view(domain: str, days_stale: int = 30, max_childr
             lines.extend([
                 "## 1. Stale Memories",
                 "Nodes not accessed within their priority threshold.",
-                "Thresholds double for each priority level: Priority 0 (<3 days), Priority 1 (<7 days), Priority 2 (<14 days), Priority 3 (<28 days), etc.",
+                f"Thresholds: Priority 0 (<3 days), Priority 1 (<7 days), Priority 2 (<14 days), Others (<{days_stale} days).",
                 ""
             ])
 
@@ -498,3 +766,88 @@ async def generate_diagnostic_view(domain: str, days_stale: int = 30, max_childr
 
     except Exception as e:
         return t("system.error_diagnostic").format(error=str(e))
+
+
+def parse_world_date(date_str: str) -> Optional[date]:
+    """Parse a world date string (YYYY-MM-DD)."""
+    try:
+        if not date_str or not isinstance(date_str, str):
+            return None
+        parts = date_str.split("-")
+        if len(parts) == 3:
+            return date(int(parts[0]), int(parts[1]), int(parts[2]))
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def calculate_relative_world_time(target_str: str, current_str: str) -> str:
+    """
+    Calculate relative time string between two world dates.
+    Uses fuzzy logic (weeks, months, years) to sound more natural for RP contexts.
+    """
+    target = parse_world_date(target_str)
+    current = parse_world_date(current_str)
+
+    if not target or not current:
+        return ""
+
+    diff = (target - current).days
+    abs_diff = abs(diff)
+    is_future = diff > 0
+
+    if abs_diff == 0:
+        return "今天"
+    elif abs_diff == 1:
+        return "明天" if is_future else "昨天"
+    elif abs_diff == 2:
+        return "后天" if is_future else "前天"
+
+    if abs_diff < 7:
+        val, unit = abs_diff, "天"
+    elif abs_diff < 30:
+        val, unit = abs_diff // 7, "周"
+    elif abs_diff < 365:
+        val, unit = abs_diff // 30, "个月"
+    else:
+        val, unit = abs_diff // 365, "年"
+
+    direction = "后" if is_future else "前"
+    return f"约 {val} {unit}{direction}"
+
+
+def parse_relative_offset(offset_str: str, current_str: str) -> Optional[str]:
+    """
+    Parse relative offsets like '-1d', '+2m' based on current_str.
+    Supports: [+/-]N[d|m|y]
+    """
+    current = parse_world_date(current_str)
+    if not current:
+        return None
+
+    match = re.match(r"^([+-]?\d+)([dmy])$", offset_str.lower())
+    if not match:
+        return None
+
+    val = int(match.group(1))
+    unit = match.group(2)
+
+    try:
+        if unit == "d":
+            from datetime import timedelta
+            new_date = current + timedelta(days=val)
+        elif unit == "m":
+            # Rough month calculation
+            new_month = current.month + val
+            new_year = current.year + (new_month - 1) // 12
+            new_month = (new_month - 1) % 12 + 1
+            new_date = current.replace(year=new_year, month=new_month)
+        elif unit == "y":
+            new_date = current.replace(year=current.year + val)
+        else:
+            return None
+        
+        return new_date.strftime("%Y-%m-%d")
+    except (ValueError, OverflowError):
+        return None
+

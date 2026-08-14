@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 import config
 from db.namespace import get_namespace
+from db import hot_swap_database
 from locales import t
 
 _IN_DOCKER = Path("/.dockerenv").exists()
@@ -31,6 +32,7 @@ class SettingsUpdate(BaseModel):
     cors_origins: str | None = None
     public_readonly_mcp: bool | None = None
     locale: str | None = None
+    world_clock: dict | None = None
 
 
 class BootUriUpdate(BaseModel):
@@ -72,11 +74,8 @@ async def update_settings(body: SettingsUpdate):
     needs_restart = False
 
     fields = body.model_dump(exclude_unset=True)
-    
-    # Only locale is allowed to be explicitly set to None (to clear it).
-    # For all other fields, if they are None, we drop them to preserve partial-update semantics.
-    fields = {k: v for k, v in fields.items() if v is not None or k == "locale"}
-
+    # Special handling for dict fields to allow partial updates.
+    fields = {k: v for k, v in fields.items() if v is not None or k in ("locale", "world_clock")}
     _DOCKER_LOCKED = {"web_port", "host"}
     if _IN_DOCKER:
         locked = _DOCKER_LOCKED & fields.keys()
@@ -118,8 +117,16 @@ async def update_settings(body: SettingsUpdate):
     for field_name, value in fields.items():
         config.set_value(field_name, value)
         updated.append(field_name)
-        if field_name in ("database_url", "host", "web_port", "api_token", "public_readonly_mcp", "cors_origins"):
+        if field_name in ("host", "web_port", "api_token", "public_readonly_mcp", "cors_origins"):
             needs_restart = True
+        if field_name == "database_url":
+            try:
+                await hot_swap_database()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=t("api.settings.db_swap_failed").format(error=e),
+                )
 
     return {
         "success": True,
@@ -309,6 +316,27 @@ async def create_database(body: DatabaseCreate):
         "database_url": url,
         "path": str(db_path),
     }
+
+
+@router.post("/database/switch")
+async def switch_database(body: DatabaseCreate):
+    """Hot-switch to a different SQLite database file.
+
+    Creates the file and parent directories if they don't exist,
+    then reconnects and runs migrations. Existing connections are closed.
+    """
+    db_path = Path(body.path).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    config.set_value("database_url", url)
+    try:
+        await hot_swap_database()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=t("api.settings.db_swap_failed").format(error=e),
+        )
+    return {"ok": True, "database_url": url, "path": str(db_path)}
 
 
 @router.post("/database/open-folder")

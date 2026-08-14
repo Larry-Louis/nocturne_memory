@@ -157,7 +157,14 @@ class GraphService:
                 "domain": path_obj.domain,
                 "path": path_obj.path,
                 "alias_count": alias_count,
+                "world_timestamp": memory.world_timestamp,
             }
+
+    async def search_memories(
+        self, query: str, domain: Optional[str] = None, limit: int = 10, namespace: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Wrapper around SearchIndexer.search."""
+        return await self._search.search(query, limit=limit, domain=domain, namespace=namespace)
 
     async def get_paths_for_node(
         self,
@@ -441,6 +448,8 @@ class GraphService:
         Returns stale nodes and crowded parent nodes.
         """
         from datetime import datetime, timedelta
+        if priority_thresholds is None:
+            priority_thresholds = {0: 3, 1: 7, 2: 14}
             
         async with self.session() as session:
             # First find when we actually started tracking last_accessed_at
@@ -729,6 +738,7 @@ class GraphService:
         content: str,
         *,
         deprecated: bool = False,
+        world_timestamp: Optional[str] = None,
     ) -> Memory:
         """Insert a new memory row and flush to obtain its ID."""
         # Canonicalize content to NFC at the write boundary so all stored
@@ -742,6 +752,7 @@ class GraphService:
             content=content,
             node_uuid=node_uuid,
             deprecated=deprecated,
+            world_timestamp=world_timestamp,
         )
         session.add(memory)
         await session.flush()
@@ -1294,6 +1305,7 @@ class GraphService:
         disclosure: Optional[str] = None,
         domain: str = "core",
         namespace: str = "",
+        world_timestamp: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a new memory under a parent path.
@@ -1332,7 +1344,7 @@ class GraphService:
 
             new_uuid = str(uuid_lib.uuid4())
             node = await self._ensure_node(session, new_uuid)
-            memory = await self._insert_memory(session, new_uuid, content)
+            memory = await self._insert_memory(session, new_uuid, content, world_timestamp=world_timestamp)
 
             edge_name = title if title else final_path.rsplit("/", 1)[-1]
             created = await self._create_edge_with_paths(
@@ -1372,6 +1384,7 @@ class GraphService:
         disclosure: Optional[str] = None,
         domain: str = "core",
         namespace: str = "",
+        world_timestamp: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Update a memory.
@@ -1379,7 +1392,7 @@ class GraphService:
         Content change -> new Memory row with the same node_uuid.
         Metadata change -> update the Edge directly.
         """
-        if content is None and priority is None and disclosure is None:
+        if content is None and priority is None and disclosure is None and world_timestamp is None:
             raise ValueError(
                 f"No update fields provided for '{domain}://{path}'. "
                 "At least one of content, priority, or disclosure must be set."
@@ -1435,15 +1448,22 @@ class GraphService:
             if content is not None:
                 rows_before["memories"] = [serialize_memory_ref(old_memory)]
 
+                # If content changed, use provided timestamp or carry over existing one
+                target_timestamp = world_timestamp if world_timestamp is not None else old_memory.world_timestamp
+
                 new_memory = await self._insert_memory(
-                    session, node_uuid, content, deprecated=True
+                    session, node_uuid, content, 
+                    deprecated=True,
+                    world_timestamp=target_timestamp
                 )
                 new_memory_id = new_memory.id
+
                 await self._deprecate_node_memories(
                     session,
                     node_uuid,
                     successor_id=new_memory_id,
                 )
+
                 await session.execute(
                     update(Memory)
                     .where(Memory.id == new_memory_id)
@@ -1457,8 +1477,14 @@ class GraphService:
                 rows_after["memories"] = [
                     serialize_memory_ref(m) for m in updated.scalars().all()
                 ]
-
-            if content is None:
+            else:
+                # content didn't change. We might update world_timestamp in-place.
+                if world_timestamp is not None:
+                    old_memory.world_timestamp = world_timestamp
+                    session.add(old_memory)
+                    rows_after["memories"] = [serialize_memory_ref(old_memory)]
+                
+                # Ensure edge changes are flushed if no new memory row was created
                 session.add(path_obj)
 
             await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace, refresh_all_namespaces=True)
@@ -1913,6 +1939,7 @@ class GraphService:
                         "created_at": memory.created_at.isoformat()
                         if memory.created_at
                         else None,
+                        "world_timestamp": memory.world_timestamp,
                     }
                 )
 

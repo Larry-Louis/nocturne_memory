@@ -19,6 +19,7 @@
       "section_server": "Server Configuration",
       "section_locale": "Language / Locale",
       "section_advanced": "Developer Mode / Advanced",
+      "section_world_clock": "World Clock",
       "section_database": "Database Connection",
       "section_boot_uris": "Boot URIs",
       "section_presets": "Boot Presets",
@@ -61,6 +62,17 @@
       "save": "Save",
       "save_failed": "Save failed",
       "invalid_port": "Invalid port number"
+    },
+    "world_clock": {
+      "current_time_label": "Current World Time",
+      "current_time_hint": "Used as the reference for calculating 'N days ago' and the default time for auto-timestamping.",
+      "auto_timestamp_label": "Auto-timestamp",
+      "auto_timestamp_desc": "Automatically associate new memories with the current world time if not specified.",
+      "show_relative_label": "Show Relative Time",
+      "show_relative_desc": "Display relative date hints like '3 days ago' in memory previews.",
+      "save": "Save Changes",
+      "saving": "Saving...",
+      "save_failed": "Save failed"
     },
     "database": {
       "type_label": "Type",
@@ -228,7 +240,9 @@
       "priority_hint": "(Lower values = higher priority)",
       "disclosure": "Disclosure",
       "disclosure_hint": "(When to recall)",
-      "disclosure_label": "Disclosure:",
+      "disclosure_label": "Disclosure",
+      "world_timestamp_label": "World Time",
+      "optional": "(Optional)",
       "disclosure_placeholder": "e.g., When I need to remember..."
     },
     "create": {
@@ -243,6 +257,7 @@
       "priority_label": "Priority",
       "priority_hint": "0 = highest, 5+ = lowest",
       "disclosure_label": "Disclosure",
+      "world_timestamp_label": "World Time",
       "disclosure_placeholder": "When to recall this memory...",
       "content_label": "Content",
       "content_placeholder": "Memory content...",
@@ -306,164 +321,159 @@
       "integration_failed": "Integration failed: {{error}}",
       "mass_integration_failed": "Mass integration failed: {{error}}"
     },
-    "confirm": {
-      "reject_title": "Reject Changes",
-      "reject_message": "Reject changes for node group {{uri}}? This will restore the memory state.",
-      "reject_label": "Reject",
-      "integrate_all_title": "Integrate All",
-      "integrate_all_message": "Integrate all pending memories?",
-      "integrate_all_label": "Integrate All"
-    },
     "sidebar": {
-      "title": "Global Review",
-      "subtitle": "All Namespaces"
+      "title": "Change Auditor",
+      "subtitle": "Neural Staging Area"
+    },
+    "empty": {
+      "awaiting_input": "The staging area is empty.",
+      "select_memory": "All neural changes are synced"
     },
     "action": {
-      "integrate_all": "Integrate All",
-      "reject_group": "Reject Group",
-      "integrate_group": "Integrate Group",
-      "retry": "Retry Connection"
-    },
-    "metadata": {
-      "title": "Edge Metadata",
-      "initial": "(Initial)",
-      "removed": "(Removed)",
-      "preserved": "(Preserved)",
-      "shifts": "Shifts"
-    },
-    "namespace": {
-      "default": "Default"
+      "integrate_all": "Approve All",
+      "integrate_group": "Approve",
+      "reject_group": "Reject",
+      "retry": "Retry"
     },
     "badge": {
-      "modified": "Modified",
+      "modified": "modified",
       "rows_affected": "{{count}} rows affected"
     },
+    "confirm": {
+      "reject_title": "Reject Change",
+      "reject_message": "Roll back all changes for {{uri}}? This cannot be undone.",
+      "reject_label": "Roll Back",
+      "integrate_all_title": "Approve All Changes",
+      "integrate_all_message": "Approve and integrate ALL pending changes? The review queue will be cleared.",
+      "integrate_all_label": "Approve All"
+    },
     "diff_status": {
-      "deletion_detected": "Deletion Detected",
       "creation_detected": "Creation Detected",
+      "deletion_detected": "Deletion Detected",
       "modification_detected": "Modification Detected",
-      "no_deviation": "No Content Deviation"
+      "no_deviation": "No Deviation"
+    },
+    "metadata": {
+      "title": "Metadata",
+      "initial": "· Initial",
+      "preserved": "· Preserved",
+      "removed": "· Removed",
+      "shifts": "· Changed"
+    },
+    "namespace": {
+      "default": "default"
+    },
+    "path": {
+      "added": "Added",
+      "removed": "Removed",
+      "accessible_at": "Currently accessible at:"
     },
     "path_modifications": {
       "title": "Path Modifications"
-    },
-    "path": {
-      "removed": "Removed",
-      "added": "Added",
-      "accessible_at": "Node still accessible at:"
     },
     "glossary": {
       "title": "Glossary Keywords"
     },
     "status": {
       "synchronizing": "Synchronizing...",
-      "connection_lost": "Connection Lost"
-    },
-    "empty": {
-      "awaiting_input": "Awaiting Input",
-      "select_memory": "Select a memory fragment to inspect"
+      "connection_lost": "Connection to neural core lost."
     }
   },
-
+  "diff": {
+    "added": "Added",
+    "removed": "Removed",
+    "no_changes": "No content changes"
+  },
+  "snapshot": {
+    "action_created": "created",
+    "action_deleted": "deleted",
+    "action_modified": "modified",
+    "empty_sequence": "No pending changes",
+    "rows": "{{count}} rows"
+  },
   "maintenance": {
-    "error": {
-      "load_orphans_failed": "Failed to load orphan memories: {{error}}",
-      "load_logs_failed": "Failed to load log statistics: {{error}}"
-    },
-    "toast": {
-      "logs_cleared": "Cleared {{count}} log records.",
-      "clear_logs_failed": "Failed to clear logs: {{error}}",
-      "partial_delete_failed": "{{failed}} / {{total}} deletions failed. Failed IDs: {{ids}}"
-    },
-    "confirm": {
-      "delete_title": "Delete Memory",
-      "delete_message": "Permanently delete {{count}} memories? This cannot be undone.",
-      "delete_label": "Delete"
-    },
-    "prompt": {
-      "clear_logs_title": "Clear Access Logs",
-      "clear_logs_message": "How many days of logs to keep? Older entries will be removed.",
-      "clear_logs_label": "Clear"
-    },
-    "badge": {
-      "deprecated": "Deprecated",
-      "orphaned": "Orphaned",
-      "unknown_date": "Unknown",
-      "node_prefix": "Node:",
-      "mem_prefix": "Mem: #{{id}}"
-    },
-    "detail": {
-      "target_no_paths": "Target #{{id}} also has no paths",
-      "loading": "Loading full content...",
-      "error_prefix": "Error: {{error}}",
-      "old_version": "Old Version (this memory)",
-      "full_content": "Full Content",
-      "diff_header": "Diff: #{{fromId}} → #{{toId}}",
-      "restore_btn": "Restore Memory",
-      "restore_title": "Restore Memory Configuration",
-      "restore_domain_label": "Domain",
-      "restore_path_label": "Target Path",
-      "restore_parent_placeholder": "Select parent path",
-      "restore_leaf_placeholder": "New segment name",
-      "restore_disclosure_placeholder": "Enter trigger condition (Disclosure)",
-      "restore_priority_label": "Priority",
-      "restore_namespace_label": "Namespace",
-      "restore_namespace_default": "(default)",
-      "restore_confirm_btn": "Confirm Restore",
-      "restore_cancel_btn": "Cancel",
-      "restore_success_toast": "Memory restored successfully at {{uri}}",
-      "restore_failed_toast": "Failed to restore memory: {{error}}"
-    },
-    "select": {
-      "deselect_all": "Deselect All",
-      "select_all": "Select All"
-    },
     "header": {
       "title": "Brain Cleanup",
-      "subtitle": "Find and clean up orphan memories — deprecated versions from updates and inaccessible memories due to deleted paths."
+      "subtitle": "Orphaned memories and deprecated versions awaiting cleanup."
     },
     "stats": {
       "deprecated_label": "Deprecated",
       "orphaned_label": "Orphaned",
       "access_logs_label": "Access Logs",
-      "clearing": "Clearing...",
       "clear_button": "Clear",
-      "oldest": "Oldest: {{date}}",
-      "no_records": "No Records"
+      "clearing": "Clearing...",
+      "no_records": "No records",
+      "oldest": "Oldest: {{date}}"
+    },
+    "group": {
+      "all": "All",
+      "deprecated_groups": "Deprecated",
+      "orphaned_section": "Orphaned",
+      "orphaned_group": "Orphaned Memories",
+      "no_path": "Migrated to #{{id}}"
     },
     "list": {
-      "header": "Orphan Memories",
-      "delete_selected": "Delete {{count}} Selected",
+      "header": "Cleanup",
+      "delete_selected": "Delete Selected ({{count}})",
       "refresh": "Refresh",
-      "scanning": "Scanning for orphan memories...",
-      "error_title": "Error",
-      "empty_title": "System Clean",
-      "empty_desc": "No orphan memories detected"
+      "scanning": "Scanning memories...",
+      "empty_title": "The brain is clean",
+      "empty_desc": "No orphaned memories or deprecated versions found.",
+      "error_title": "Load Failed"
+    },
+    "select": {
+      "select_all": "Select all",
+      "deselect_all": "Deselect all"
+    },
+    "badge": {
+      "node_prefix": "UUID:",
+      "mem_prefix": "Mem #{{id}}",
+      "deprecated": "Deprecated",
+      "orphaned": "Orphaned",
+      "unknown_date": "Unknown date"
     },
     "section": {
       "deprecated_versions": "Deprecated Versions",
-      "orphaned_memories": "Orphan Memories"
+      "orphaned_memories": "Orphaned Memories"
     },
-    "group": {
-      "all": "All Memories",
-      "deprecated_groups": "Deprecated Groups",
-      "orphaned_section": "Orphan Memories",
-      "orphaned_group": "Orphan Memories (no paths)",
-      "no_path": "Target #{{id}} (no paths)"
+    "confirm": {
+      "delete_title": "Delete Memories",
+      "delete_message": "Permanently delete {{count}} selected memories? This cannot be undone.",
+      "delete_label": "Delete"
+    },
+    "toast": {
+      "logs_cleared": "Deleted {{count}} log entries",
+      "clear_logs_failed": "Failed to clear logs: {{error}}",
+      "partial_delete_failed": "{{failed}} of {{total}} memories failed to delete. IDs: {{ids}}"
+    },
+    "prompt": {
+      "clear_logs_title": "Clear Access Logs",
+      "clear_logs_message": "Enter how many days of access logs to keep. Older entries will be deleted.",
+      "clear_logs_label": "Clear"
+    },
+    "error": {
+      "load_orphans_failed": "Failed to load orphaned memories: {{error}}"
+    },
+    "detail": {
+      "loading": "Loading...",
+      "error_prefix": "Failed to load details: {{error}}",
+      "old_version": "Old Version",
+      "full_content": "Full Content",
+      "diff_header": "Diff #{{fromId}} → #{{toId}}",
+      "target_no_paths": "Migrated to #{{id}} — no access paths",
+      "restore_btn": "Restore",
+      "restore_title": "Restore Memory",
+      "restore_path_label": "Target Path",
+      "restore_parent_placeholder": "Root",
+      "restore_leaf_placeholder": "Leaf name...",
+      "restore_namespace_label": "Namespace",
+      "restore_namespace_default": "Default (no namespace)",
+      "restore_disclosure_placeholder": "When to recall this memory...",
+      "restore_priority_label": "Priority",
+      "restore_cancel_btn": "Cancel",
+      "restore_confirm_btn": "Restore",
+      "restore_success_toast": "Restored to {{uri}}",
+      "restore_failed_toast": "Restore failed: {{error}}"
     }
-  },
-
-  "snapshot": {
-    "empty_sequence": "Empty Sequence",
-    "action_created": "Created",
-    "action_deleted": "Deleted",
-    "action_modified": "Modified",
-    "rows": "{{count}} rows"
-  },
-
-  "diff": {
-    "no_changes": "No changes detected in content.",
-    "removed": "REMOVED",
-    "added": "ADDED"
   }
 }

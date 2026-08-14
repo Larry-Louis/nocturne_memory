@@ -643,7 +643,7 @@ npm run dev
 4. **访问管理界面**
    打开 `http://localhost`（或你指定的端口）
 
-> 💡 **提示**：首次启动时，`backend` 会自动初始化数据库表结构（`create_all`），之后每次启动都会检查并执行 pending 的数据库迁移脚本（`db/migrations/`）。迁移前会自动备份数据库（保存在 `backups_data` 卷中）。
+> 💡 **提示**：首次启动时，`backend` 会自动初始化数据库表结构（`create_all`），之后每次启动都会检查并执行 pending 的数据库迁移脚本（`db/migrations/`）。迁移前会自动备份数据库（保存在 `./data/backups` 目录中）。
 > ⚠️ **注意**：Docker 部署使用的是全新的 PostgreSQL，默认是**完全空白**的状态，不包含 `demo.db` 中的预置示例数据。你需要通过客户端或 Dashboard 从零开始为 AI 创建核心记忆。
 
 ### MCP 客户端配置

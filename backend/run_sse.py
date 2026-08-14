@@ -41,6 +41,9 @@ def main():
     @contextlib.asynccontextmanager
     async def combined_lifespan(app):
         async with contextlib.AsyncExitStack() as stack:
+            # The MCP SDK's sse_app/streamable_http_app Starlette apps only run
+            # their own session-manager lifespan and never invoke FastMCP's
+            # custom lifespan, so DB init must come from the web app lifespan.
             await stack.enter_async_context(default_lifespan(app))
             await stack.enter_async_context(sse_asgi_app.router.lifespan_context(app))
             await stack.enter_async_context(streamable_asgi_app.router.lifespan_context(app))

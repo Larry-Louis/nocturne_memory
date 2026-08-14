@@ -14,6 +14,7 @@ scripts/backup_memory.ps1
 
 # Python
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,5 +25,15 @@ assets/
 frontend/dist/
 backups/
 
+# Local tooling / install artifacts
+install/
+.omo/
+
+# Docker bind-mounted data (docker-compose)
+data/
+
 # Sisyphus tooling artifacts
 .sisyphus/
+
+# Windows env-var literal (accidental unexpanded %APPDATA% installs)
+%APPDATA%/

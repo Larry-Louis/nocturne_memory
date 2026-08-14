@@ -2,34 +2,18 @@
 # The setup script auto-generates .env with secure credentials.
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-nocturne_memory}
-      POSTGRES_USER: ${POSTGRES_USER:-nocturne}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/setup_docker.py first}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB:-nocturne_memory} -U $${POSTGRES_USER:-nocturne}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   backend:
+    container_name: nocturne-backend
     build:
       context: ./backend
     command: python run_sse.py
     environment:
       SNAPSHOT_DIR: /app/snapshots
-    depends_on:
-      postgres:
-        condition: service_healthy
     volumes:
-      - snapshots_data:/app/snapshots
-      - backups_data:/app/backups
-      - ./config.json:/app/config.json
+      - ./data/sqlite:/app/sqlite
+      - ./data/snapshots:/app/snapshots
+      - ./data/backups:/app/backups
+      - ./config.docker.json:/app/config.json
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8233/health || exit 1"]
       interval: 10s
@@ -39,6 +23,7 @@ services:
     restart: unless-stopped
 
   nginx:
+    container_name: nocturne-nginx
     build:
       context: ./frontend
     ports:
@@ -47,8 +32,3 @@ services:
       backend:
         condition: service_started
     restart: unless-stopped
-
-volumes:
-  postgres_data:
-  snapshots_data:
-  backups_data:
