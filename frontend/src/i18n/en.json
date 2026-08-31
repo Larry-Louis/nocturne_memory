@@ -1,6 +1,11 @@
 {
   "_comment": "Key naming: {section}.{component}.{key}. Example: 'app.nav.review' for Review & Audit nav link. English is canonical.",
 
+  "common": {
+    "cancel": "Cancel",
+    "confirm": "Confirm"
+  },
+
   "app": {
     "nav": {
       "brand": "Nocturne Admin",
@@ -232,6 +237,12 @@
       "add": "Add to Boot",
       "label": "Boot"
     },
+    "view": {
+      "markdown": "Markdown",
+      "source": "Source",
+      "markdown_tooltip": "Switch to Markdown rendered view",
+      "source_tooltip": "Switch to raw source view"
+    },
     "edit": {
       "edit": "Edit",
       "save": "Save Changes",
@@ -273,9 +284,19 @@
       "cancel": "Cancel",
       "deleting": "Deleting..."
     },
+    "move": {
+      "tooltip": "Move this memory and all its children",
+      "title": "Move Memory",
+      "message": "Move {{uri}} (and all its children) to another location. Enter the target parent path:",
+      "placeholder": "e.g., core://target_parent or writer://folder (cross-domain)",
+      "confirm": "Move",
+      "moving": "Moving...",
+      "path_required": "Target parent path is required"
+    },
     "empty": {
       "empty_sector": "Empty Sector"
     },
+    "access_count_tooltip": "Times the AI has retrieved this memory (MCP reads only)",
     "grid": {
       "memory_clusters": "Memory Clusters",
       "sub_nodes": "Sub-nodes"
@@ -305,7 +326,9 @@
     },
     "toast": {
       "save_failed": "Save failed: {{error}}",
-      "delete_failed": "Delete failed: {{error}}"
+      "delete_failed": "Delete failed: {{error}}",
+      "move_success": "Moved to {{uri}}",
+      "move_failed": "Move failed: {{error}}"
     }
   },
 

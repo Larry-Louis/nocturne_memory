@@ -8,6 +8,7 @@ hierarchical browser. Every path is just a node with content and children.
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
+import asyncio
 import config
 from db import get_graph_service, get_glossary_service, get_db_manager, get_search_indexer, get_preset_service
 from db.models import Path as PathModel, Edge as EdgeModel, ROOT_NODE_UUID
@@ -53,6 +54,19 @@ class CreateAliasRequest(BaseModel):
     new_domain: str = "core"
     target_domain: str = "core"
     priority: int = 0
+
+
+class RenameNodeRequest(BaseModel):
+    path: str
+    new_name: str
+    domain: str = "core"
+
+
+class MoveNodeRequest(BaseModel):
+    path: str
+    target_parent_path: str
+    domain: str = "core"
+    target_domain: str | None = None  # None = inherit source domain
 
 
 @router.get("/namespaces")
@@ -261,6 +275,21 @@ async def get_node(
             if matches_dict:
                 glossary_matches = [{"keyword": kw, "nodes": nodes} for kw, nodes in matches_dict.items()]
 
+    # Access count reflects AI-side memory retrieval (MCP reads) only.
+    # Human dashboard browsing must NOT inflate the frequency signal.
+    access_count = 0
+    if node_uuid and node_uuid != ROOT_NODE_UUID:
+        from sqlalchemy import func as sa_func
+        from db.models import MemoryAccessLog
+        async with get_db_manager().session() as session:
+            access_count = await session.scalar(
+                select(sa_func.count(MemoryAccessLog.id)).where(
+                    MemoryAccessLog.node_uuid == node_uuid,
+                    MemoryAccessLog.namespace == get_namespace(),
+                    MemoryAccessLog.context == "mcp_read",
+                )
+            ) or 0
+
     return {
         "node": {
             "path": path,
@@ -275,6 +304,7 @@ async def get_node(
             "is_virtual": memory.get("created_at") is None,
             "aliases": aliases,
             "node_uuid": node_uuid,
+            "access_count": access_count,
             "glossary_keywords": glossary_keywords,
             "glossary_matches": glossary_matches,
         },
@@ -364,6 +394,149 @@ async def create_alias(body: CreateAliasRequest):
     return {"success": True, "uri": f"{body.new_domain}://{body.new_path}"}
 
 
+async def _move_node(
+    graph,
+    preset,
+    old_path: str,
+    old_domain: str,
+    new_path: str,
+    new_domain: str,
+    namespace: str,
+) -> dict:
+    """Move a node and its whole subtree to a new path.
+
+    Uses add_path's descendant cascade to recreate the subtree under the new
+    prefix, then remove_path to clean up the old prefix.  Boot URI entries
+    pointing into the old subtree are rewritten to the new location.
+    """
+    old_uri = f"{old_domain}://{old_path}"
+    new_uri = f"{new_domain}://{new_path}"
+
+    if old_uri == new_uri:
+        return {"success": True, "old_uri": old_uri, "new_uri": new_uri, "unchanged": True}
+
+    memory = await graph.get_memory_by_path(old_path, domain=old_domain, namespace=namespace)
+    if not memory:
+        raise ValueError(t("api.browse.path_not_found").format(uri=old_uri))
+
+    # 1. Recreate the subtree under the new path (cascades descendants).
+    await graph.add_path(
+        new_path=new_path,
+        target_path=old_path,
+        new_domain=new_domain,
+        target_domain=old_domain,
+        priority=memory.get("priority", 0),
+        disclosure=memory.get("disclosure"),
+        namespace=namespace,
+    )
+
+    # 2. Remove the old path (and its subtree).  If cleanup fails, roll back
+    #    the newly created path so the move is atomic.
+    try:
+        await graph.remove_path(old_path, old_domain, namespace=namespace)
+    except ValueError as e:
+        try:
+            await graph.remove_path(new_path, new_domain, namespace=namespace)
+        except Exception:
+            pass
+        raise ValueError(t("api.browse.rename_partial_failure").format(error=str(e)))
+
+    # 3. Rewrite boot URI entries that point into the old subtree.
+    await preset.rewrite_boot_uri(old_uri, new_uri, namespace)
+
+    return {
+        "success": True,
+        "old_uri": old_uri,
+        "new_uri": new_uri,
+        "old_path": old_path,
+        "new_path": new_path,
+        "new_domain": new_domain,
+    }
+
+
+@router.post("/node/rename")
+async def rename_node(body: RenameNodeRequest):
+    """Rename a memory by changing the last segment of its URI path.
+
+    The node and its whole subtree are moved to the new path
+    (add_path cascade + remove_path cleanup).
+    """
+    if not re.match(r"^[a-zA-Z0-9_-]+$", body.new_name):
+        raise HTTPException(status_code=422, detail=t("api.browse.invalid_name"))
+
+    old_path = body.path
+    if "/" in old_path:
+        parent = old_path.rsplit("/", 1)[0]
+        new_path = f"{parent}/{body.new_name}"
+    else:
+        new_path = body.new_name
+
+    graph = get_graph_service()
+    preset = get_preset_service()
+    try:
+        result = await _move_node(
+            graph,
+            preset,
+            old_path=old_path,
+            old_domain=body.domain,
+            new_path=new_path,
+            new_domain=body.domain,
+            namespace=get_namespace(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return result
+
+
+@router.post("/node/move")
+async def move_node(body: MoveNodeRequest):
+    """Move a node (and its whole subtree) under another parent path.
+
+    The node keeps its own name; only its parent changes.  Cross-domain moves
+    are supported via target_domain OR by prefixing target_parent_path with
+    "domain://" (e.g. "writer://folder").  An explicit domain:// prefix wins
+    over the current domain.
+    """
+    old_path = body.path
+    name = old_path.rsplit("/", 1)[-1]
+    raw_parent = body.target_parent_path.strip()
+
+    # Parse an optional "domain://" prefix out of the target parent path.
+    # This lets the UI move a node to a different root without the backend
+    # silently defaulting to the current domain.  A bare root like "writer://"
+    # (no path after the prefix) resolves to the root of that domain.
+    target_domain = body.target_domain
+    if "://" in raw_parent:
+        scheme, _, rest = raw_parent.partition("://")
+        if scheme:
+            target_domain = scheme
+            raw_parent = rest
+    target_parent = raw_parent.strip("/")
+
+    if target_parent:
+        new_path = f"{target_parent}/{name}"
+    else:
+        new_path = name
+
+    new_domain = target_domain or body.domain
+
+    graph = get_graph_service()
+    preset = get_preset_service()
+    try:
+        result = await _move_node(
+            graph,
+            preset,
+            old_path=old_path,
+            old_domain=body.domain,
+            new_path=new_path,
+            new_domain=new_domain,
+            namespace=get_namespace(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return result
+
+
 @router.delete("/node")
 async def delete_node(
     path: str = Query(...),
@@ -384,7 +557,7 @@ async def add_glossary(body: GlossaryAdd):
     """Bind a keyword to a node."""
     glossary = get_glossary_service()
     try:
-        await glossary.add_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
+        await glossary.add_glossary_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"success": True}
@@ -395,7 +568,7 @@ async def remove_glossary(body: GlossaryRemove):
     """Unbind a keyword from a node."""
     glossary = get_glossary_service()
     try:
-        await glossary.remove_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
+        await glossary.remove_glossary_keyword(body.keyword, body.node_uuid, namespace=get_namespace())
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"success": True}

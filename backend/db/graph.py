@@ -28,6 +28,9 @@ from sqlalchemy import (
     not_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from locales import t
+
 from .models import (
     ROOT_NODE_UUID,
     Node,
@@ -980,11 +983,11 @@ class GraphService:
         )
         target = target_result.scalar_one_or_none()
         if not target:
-            raise ValueError(f"Memory ID {memory_id} not found")
+            raise ValueError(t("api.graph.memory_not_found").format(memory_id=memory_id))
 
         if require_deprecated and not target.deprecated:
             raise PermissionError(
-                f"Memory {memory_id} is active (deprecated=False). Deletion aborted."
+                t("api.graph.memory_active_aborted").format(memory_id=memory_id)
             )
 
         successor_id = target.migrated_to
@@ -996,7 +999,7 @@ class GraphService:
 
         result = await session.execute(delete(Memory).where(Memory.id == memory_id))
         if result.rowcount == 0:
-            raise ValueError(f"Memory ID {memory_id} not found")
+            raise ValueError(t("api.graph.memory_not_found").format(memory_id=memory_id))
 
         return {
             "deleted_memory_id": memory_id,
@@ -1319,8 +1322,9 @@ class GraphService:
                 parent = await self._resolve_path(session, parent_path, domain, namespace=namespace)
                 if not parent:
                     raise ValueError(
-                        f"Parent '{domain}://{parent_path}' does not exist. "
-                        f"Create the parent first, or use '{domain}://' as root."
+                        t("api.graph.parent_missing_root").format(
+                            domain=domain, parent_path=parent_path
+                        )
                     )
                 _, _, parent_uuid = parent
 
@@ -1340,7 +1344,7 @@ class GraphService:
                 )
             )
             if existing.scalar_one_or_none():
-                raise ValueError(f"Path '{domain}://{final_path}' already exists")
+                raise ValueError(t("api.graph.path_exists").format(domain=domain, path=final_path))
 
             new_uuid = str(uuid_lib.uuid4())
             node = await self._ensure_node(session, new_uuid)
@@ -1394,8 +1398,7 @@ class GraphService:
         """
         if content is None and priority is None and disclosure is None and world_timestamp is None:
             raise ValueError(
-                f"No update fields provided for '{domain}://{path}'. "
-                "At least one of content, priority, or disclosure must be set."
+                t("api.graph.no_update_fields").format(domain=domain, path=path)
             )
 
         async with self.session() as session:
@@ -1419,7 +1422,9 @@ class GraphService:
 
             if not row:
                 raise ValueError(
-                    f"Path '{domain}://{path}' not found or memory is deprecated"
+                    t("api.graph.path_not_found_or_deprecated").format(
+                        domain=domain, path=path
+                    )
                 )
 
             old_memory, edge, path_obj = row
@@ -1511,7 +1516,7 @@ class GraphService:
             )
             target_memory = target_row.scalar_one_or_none()
             if not target_memory:
-                raise ValueError(f"Memory ID {target_memory_id} not found")
+                raise ValueError(t("api.graph.memory_not_found").format(memory_id=target_memory_id))
 
             if not target_memory.deprecated:
                 return {
@@ -1556,13 +1561,15 @@ class GraphService:
         Also cascades: automatically creates sub-paths for all descendants.
         """
         if new_path == "":
-            raise ValueError("Cannot create an alias at the root path.")
+            raise ValueError(t("api.graph.alias_root"))
 
         async with self.session() as session:
             target = await self._resolve_path(session, target_path, target_domain, namespace=namespace)
             if not target:
                 raise ValueError(
-                    f"Target path '{target_domain}://{target_path}' not found"
+                    t("api.graph.alias_target_not_found").format(
+                        target_domain=target_domain, target_path=target_path
+                    )
                 )
             _, target_edge, target_node_uuid = target
 
@@ -1575,8 +1582,9 @@ class GraphService:
                 parent = await self._resolve_path(session, parent_path, new_domain, namespace=namespace)
                 if not parent:
                     raise ValueError(
-                        f"Parent '{new_domain}://{parent_path}' does not exist. "
-                        f"Create the parent first, or use a shallower alias path."
+                        t("api.graph.alias_parent_missing").format(
+                            new_domain=new_domain, parent_path=parent_path
+                        )
                     )
                 _, _, parent_uuid = parent
             else:
@@ -1590,7 +1598,7 @@ class GraphService:
                 )
             )
             if existing.scalar_one_or_none():
-                raise ValueError(f"Path '{new_domain}://{new_path}' already exists")
+                raise ValueError(t("api.graph.path_exists").format(domain=new_domain, path=new_path))
 
             # Snapshot existing rows under this prefix so rows_after only
             # contains rows actually created by this call.
@@ -1601,9 +1609,9 @@ class GraphService:
 
             if await self._would_create_cycle(session, parent_uuid, target_node_uuid):
                 raise ValueError(
-                    f"Cannot create alias '{new_domain}://{new_path}': "
-                    f"target node is an ancestor of the destination parent, "
-                    f"which would create a cycle in the graph."
+                    t("api.graph.alias_cycle").format(
+                        new_domain=new_domain, new_path=new_path
+                    )
                 )
 
             result = await self._create_edge_with_paths(
@@ -1667,12 +1675,12 @@ class GraphService:
                 create unreachable child nodes.
         """
         if path == "":
-            raise ValueError("Cannot remove the root path.")
+            raise ValueError(t("api.graph.remove_root"))
 
         async with self._optional_session(session) as session:
             target = await self._resolve_path(session, path, domain, namespace=namespace)
             if not target:
-                raise ValueError(f"Path '{domain}://{path}' not found")
+                raise ValueError(t("api.graph.path_not_found").format(domain=domain, path=path))
             _, target_edge, target_node_uuid = target
 
             # Pre-flight orphan check for children
@@ -1714,7 +1722,13 @@ class GraphService:
             surviving_paths_result = await session.execute(surviving_query.limit(1))
             surviving_path = surviving_paths_result.scalar_one_or_none()
 
+            seen_child_uuids = set()
             for child_edge in child_edges:
+                # The same child can be reached via several edges (edges are
+                # reused when a path is renamed); treat it once.
+                if child_edge.child_uuid in seen_child_uuids:
+                    continue
+                seen_child_uuids.add(child_edge.child_uuid)
                 surviving_count = await self._count_incoming_paths(
                     session,
                     child_edge.child_uuid,
@@ -1730,15 +1744,29 @@ class GraphService:
                         repair_tasks.append(child_edge)
 
             if would_orphan:
-                details = ", ".join(
-                    f"'{e.name}' (node: {e.child_uuid[:8]}...)" for e in would_orphan
-                )
+                # Label each orphaned child by one of its current paths —
+                # edge.name can be stale (an edge keeps the name it was
+                # created with, even after the child path was renamed).
+                orphan_labels = []
+                for child_edge in would_orphan:
+                    child_path_result = await session.execute(
+                        select(Path)
+                        .where(Path.node_uuid == child_edge.child_uuid)
+                        .limit(1)
+                    )
+                    child_path_row = child_path_result.scalar_one_or_none()
+                    if child_path_row is not None:
+                        label = f"{child_path_row.domain}://{child_path_row.path}"
+                    else:
+                        label = child_edge.name
+                    orphan_labels.append(
+                        f"'{label}' (node: {child_edge.child_uuid[:8]}...)"
+                    )
+                details = ", ".join(orphan_labels)
                 raise ValueError(
-                    f"Cannot remove '{domain}://{path}': "
-                    f"the following child node(s) would become unreachable: "
-                    f"{details}. "
-                    f"Create alternative paths for these children first, "
-                    f"or remove them explicitly."
+                    t("api.graph.remove_orphan_children").format(
+                        domain=domain, path=path, details=details
+                    )
                 )
 
             if repair_tasks and surviving_path:
@@ -1761,9 +1789,12 @@ class GraphService:
 
                         if suffix_counter >= max_attempts:
                             raise ValueError(
-                                f"Cannot find a free path for child '{base_name}' "
-                                f"under '{surviving_path.domain}://{surviving_path.path}' "
-                                f"after {max_attempts} attempts"
+                                t("api.graph.no_free_child_path").format(
+                                    base_name=base_name,
+                                    domain=surviving_path.domain,
+                                    path=surviving_path.path,
+                                    max_attempts=max_attempts,
+                                )
                             )
 
                         if suffix_counter == 0:
@@ -1832,14 +1863,14 @@ class GraphService:
         new cross-namespace association from scratch.
         """
         if path == "":
-            raise ValueError("Cannot restore the root path.")
+            raise ValueError(t("api.graph.restore_root"))
 
         async with self._optional_session(session) as session:
             node_result = await session.execute(
                 select(Node).where(Node.uuid == node_uuid)
             )
             if not node_result.scalar_one_or_none():
-                raise ValueError(f"Node '{node_uuid}' not found")
+                raise ValueError(t("api.graph.node_not_found").format(node_uuid=node_uuid))
 
             active_mem = await session.execute(
                 select(Memory).where(
@@ -1855,7 +1886,7 @@ class GraphService:
                 )
                 latest_mem = latest.scalar_one_or_none()
                 if not latest_mem:
-                    raise ValueError(f"Node '{node_uuid}' has no memory versions")
+                    raise ValueError(t("api.graph.node_no_versions").format(node_uuid=node_uuid))
                 await session.execute(
                     update(Memory)
                     .where(Memory.id == latest_mem.id)
@@ -1870,7 +1901,7 @@ class GraphService:
                 )
             )
             if existing.scalar_one_or_none():
-                raise ValueError(f"Path '{domain}://{path}' already exists")
+                raise ValueError(t("api.graph.path_exists").format(domain=domain, path=path))
 
             if parent_uuid is None:
                 if "/" in path:
@@ -2149,7 +2180,7 @@ class GraphService:
             mem_result = await session.execute(select(Memory).where(Memory.id == memory_id))
             mem = mem_result.scalar_one_or_none()
             if not mem:
-                raise ValueError(f"Memory {memory_id} not found")
+                raise ValueError(t("api.graph.memory_not_found").format(memory_id=memory_id))
 
             delete_result = await self._safely_delete_memory(
                 session,
@@ -2196,7 +2227,7 @@ class GraphService:
         activating it (setting deprecated=False).
         """
         if not new_path:
-            raise ValueError("New path cannot be empty")
+            raise ValueError(t("api.graph.new_path_empty"))
 
         async with self.session() as session:
             # 1. Fetch memory
@@ -2205,7 +2236,7 @@ class GraphService:
             )
             memory = result.scalar_one_or_none()
             if not memory:
-                raise ValueError(f"Memory ID {memory_id} not found")
+                raise ValueError(t("api.graph.memory_not_found").format(memory_id=memory_id))
 
             # 2. Resolve parent node UUID and check validity
             if "/" in new_path:
@@ -2213,8 +2244,9 @@ class GraphService:
                 parent = await self._resolve_path(session, parent_path, new_domain, namespace=namespace)
                 if not parent:
                     raise ValueError(
-                        f"Parent '{new_domain}://{parent_path}' does not exist. "
-                        f"Create the parent first, or use a shallower path."
+                        t("api.graph.restore_parent_missing").format(
+                            new_domain=new_domain, parent_path=parent_path
+                        )
                     )
                 _, _, parent_uuid = parent
             else:
@@ -2229,17 +2261,14 @@ class GraphService:
                 )
             )
             if existing.scalar_one_or_none():
-                raise ValueError(f"Path '{new_domain}://{new_path}' already exists")
+                raise ValueError(t("api.graph.path_exists").format(domain=new_domain, path=new_path))
 
             # 4. Reject historical deprecated versions of active nodes
             # If memory.migrated_to is not None, it means this is a historical version of a node
             # that has an active version elsewhere in the graph. We do not restore old versions here,
             # we only restore true orphaned nodes that lost all their paths.
             if memory.migrated_to is not None:
-                raise ValueError(
-                    "Historical deprecated versions of an active node cannot be restored. "
-                    "Only true orphaned memories (which lost all paths) can be restored."
-                )
+                raise ValueError(t("api.graph.restore_deprecated"))
 
             target_node_uuid = memory.node_uuid
             restored_memory_id = memory_id
@@ -2247,8 +2276,9 @@ class GraphService:
             # 5. Check for cycles
             if await self._would_create_cycle(session, parent_uuid, target_node_uuid):
                 raise ValueError(
-                    f"Cannot restore memory to '{new_domain}://{new_path}': "
-                    f"this would create a cycle in the graph."
+                    t("api.graph.restore_cycle").format(
+                        new_domain=new_domain, new_path=new_path
+                    )
                 )
 
             # 6. Bind the path (creates Edge and Path row(s))

@@ -82,6 +82,9 @@ export const addAlias = (data) =>
 export const renameNode = (data) =>
   api.post('/browse/node/rename', data).then(res => res.data);
 
+export const moveNode = (data) =>
+  api.post('/browse/node/move', data).then(res => res.data);
+
 // ============ Settings API ============
 
 export const getSettings = () =>

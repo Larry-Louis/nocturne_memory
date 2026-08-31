@@ -8,7 +8,10 @@
     "game",
     "notes",
     "narrative",
-    "projects"
+    "projects",
+    "agents",
+    "novels",
+    "acts"
   ],
   "boot_uris": {
     "": [
@@ -25,7 +28,7 @@
   "public_readonly_mcp": false,
   "locale": "zh",
   "world_clock": {
-    "current_time": "2026-08-14",
+    "current_time": "2026-08-22",
     "auto_timestamp": true,
     "show_relative": true,
     "format": "YYYY-MM-DD"

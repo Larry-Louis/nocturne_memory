@@ -17,3 +17,179 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #475569; 
 }
+
+/* ============================================
+   Blue Topaz 风格 Markdown 渲染
+   参考: .obsidian/themes/Blue Topaz/theme.css（暗色变量）
+   ============================================ */
+.bt-markdown {
+  font-family: Bookerly, 'Inter', 'Segoe UI', '霞鹜文楷 GB', 'LXGW WenKai', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+  font-size: 1em;
+  line-height: 1.5;
+  color: #c6c6c6;
+  word-break: break-word;
+}
+
+.bt-markdown p {
+  margin: 0 0 1em;
+}
+
+/* 标题: 彩虹色 + 尺寸（来自 --h1-size..--h6-size / --h*-color） */
+.bt-markdown h1,
+.bt-markdown h2,
+.bt-markdown h3,
+.bt-markdown h4,
+.bt-markdown h5,
+.bt-markdown h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.2em 0 0.5em;
+}
+.bt-markdown h1 { font-size: 1.5625em; color: hsl(78, 62%, 47%); }
+.bt-markdown h2 { font-size: 1.4375em; color: hsl(118, 42%, 49%); }
+.bt-markdown h3 { font-size: 1.3125em; color: hsl(180, 53%, 48%); }
+.bt-markdown h4 { font-size: 1.1875em; color: hsl(216, 69%, 68%); }
+.bt-markdown h5 { font-size: 1.0625em; color: hsl(258, 79%, 77%); }
+.bt-markdown h6 { font-size: 1em; color: hsl(290, 85%, 81%); }
+
+.bt-markdown h1:first-child,
+.bt-markdown h2:first-child,
+.bt-markdown h3:first-child,
+.bt-markdown h4:first-child,
+.bt-markdown h5:first-child,
+.bt-markdown h6:first-child {
+  margin-top: 0;
+}
+
+/* 链接: --color-accent = hsla(209,95%,62%) */
+.bt-markdown a {
+  color: hsl(209, 95%, 62%);
+  text-decoration: none;
+  border-bottom: 1px solid hsla(209, 95%, 62%, 0.35);
+  transition: color 0.15s, border-color 0.15s;
+}
+.bt-markdown a:hover {
+  color: hsl(209, 85%, 72%);
+  border-bottom-color: hsla(209, 85%, 72%, 0.6);
+}
+
+/* 行内代码 / 代码块: --background-code #1111118c, --code-normal #d0d0d0 */
+.bt-markdown code {
+  font-family: 'JetBrains Mono', Consolas, Monaco, 'Source Han Mono', 'Microsoft YaHei Mono', monospace;
+  font-size: 0.825em;
+  font-weight: 600;
+  color: #d0d0d0;
+  background: rgba(17, 17, 17, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 5px;
+  padding: 0.15em 0.35em;
+}
+.bt-markdown pre {
+  background: rgba(17, 17, 17, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 7px;
+  padding: 1em 1.2em;
+  margin: 0 0 1em;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+.bt-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-weight: 400;
+  color: #d0d0d0;
+}
+
+/* 引用: 左侧 5px 主题色 + 半透明底 + 圆角（--radius-s 5px） */
+.bt-markdown blockquote {
+  margin: 0 2.5% 1em;
+  padding: 0.5em 0.5em 0.5em 0.6em;
+  border-left: 5px solid hsl(209, 95%, 62%);
+  background-color: rgba(145, 145, 145, 0.11);
+  border-radius: 5px;
+}
+.bt-markdown blockquote p:last-child {
+  margin-bottom: 0;
+}
+.bt-markdown blockquote blockquote {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* 列表: --line-height-list 2 */
+.bt-markdown ul,
+.bt-markdown ol {
+  line-height: 2;
+  margin: 0 0 1em;
+  padding-left: 1.6em;
+}
+.bt-markdown ul { list-style: disc; }
+.bt-markdown ol { list-style: decimal; }
+.bt-markdown li > ul,
+.bt-markdown li > ol {
+  margin-bottom: 0;
+}
+
+/* 任务列表 (remark-gfm checkbox) */
+.bt-markdown li.task-list-item {
+  list-style: none;
+  margin-left: -1.4em;
+}
+.bt-markdown li.task-list-item input[type="checkbox"] {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin-right: 0.5em;
+  vertical-align: middle;
+  accent-color: hsl(216, 69%, 68%);
+}
+
+/* 表格: th 2px 下边框 + 斑马纹 */
+.bt-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 1em;
+  font-size: 0.9em;
+}
+.bt-markdown th,
+.bt-markdown td {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.bt-markdown th {
+  border-bottom: 2px solid hsla(209, 95%, 62%, 0.55);
+  background: rgba(0, 0, 0, 0.4);
+  color: #c6c6c6;
+  font-weight: 600;
+}
+.bt-markdown tbody tr:nth-child(odd) td {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* 分割线: 主题色渐变（参考 fancy-hr gradient） */
+.bt-markdown hr {
+  border: none;
+  height: 2px;
+  margin: 1.5em 0;
+  background: linear-gradient(to right, transparent 0%, hsla(209, 95%, 62%, 0.45) 30%, hsla(209, 95%, 62%, 0.45) 70%, transparent 100%);
+}
+
+/* 删除线: --text-muted #8a8a8a */
+.bt-markdown del {
+  color: #8a8a8a;
+}
+
+/* 高亮 mark */
+.bt-markdown mark {
+  background: rgba(255, 182, 35, 0.25);
+  color: #c6c6c6;
+  padding: 0 0.2em;
+  border-radius: 3px;
+}
+
+/* 图片 */
+.bt-markdown img {
+  max-width: 100%;
+  border-radius: 7px;
+}

@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
+import { useLocale } from '../i18n/useLocale';
 
 export default function PromptModal({
   title = 'Input Required',
   message = '',
   defaultValue = '',
-  submitLabel = 'Submit',
-  cancelLabel = 'Cancel',
+  submitLabel,
+  cancelLabel,
   placeholder = '',
   onSubmit,
   onCancel,
 }) {
+  const { t } = useLocale();
   const [value, setValue] = useState(defaultValue);
   const inputRef = useRef(null);
 
@@ -65,14 +67,14 @@ export default function PromptModal({
             onClick={onCancel}
             className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors"
           >
-            {cancelLabel}
+            {cancelLabel ?? t('common.cancel')}
           </button>
           <button
             onClick={handleSubmit}
             disabled={!value.trim()}
             className="px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
           >
-            {submitLabel}
+            {submitLabel ?? t('common.confirm')}
           </button>
         </div>
       </div>

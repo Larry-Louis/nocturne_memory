@@ -1,4 +1,9 @@
 {
+  "common": {
+    "cancel": "取消",
+    "confirm": "确认"
+  },
+
   "app": {
     "nav": {
       "brand": "Nocturne 管理面板",
@@ -227,6 +232,12 @@
       "add": "添加到启动项",
       "label": "启动"
     },
+    "view": {
+      "markdown": "Markdown",
+      "source": "源码",
+      "markdown_tooltip": "切换到 Markdown 渲染视图",
+      "source_tooltip": "切换到源数据视图"
+    },
     "edit": {
       "edit": "编辑",
       "save": "保存更改",
@@ -268,9 +279,19 @@
       "cancel": "取消",
       "deleting": "删除中..."
     },
+    "move": {
+      "tooltip": "移动此记忆及其所有子节点",
+      "title": "移动记忆",
+      "message": "将 {{uri}}（及其所有子节点）移动到另一个位置。输入目标父路径：",
+      "placeholder": "例如：core://目标父路径 或 writer://文件夹（跨域）",
+      "confirm": "移动",
+      "moving": "移动中...",
+      "path_required": "请填写目标父路径"
+    },
     "empty": {
       "empty_sector": "空白区域"
     },
+    "access_count_tooltip": "AI 检索这条记忆的次数（仅 MCP 读取）",
     "grid": {
       "memory_clusters": "记忆集群",
       "sub_nodes": "子节点"
@@ -300,7 +321,9 @@
     },
     "toast": {
       "save_failed": "保存失败：{{error}}",
-      "delete_failed": "删除失败：{{error}}"
+      "delete_failed": "删除失败：{{error}}",
+      "move_success": "已移动到 {{uri}}",
+      "move_failed": "移动失败：{{error}}"
     }
   },
   "review": {

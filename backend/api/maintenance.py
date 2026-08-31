@@ -101,6 +101,81 @@ async def clear_access_logs(req: ClearLogsRequest):
         return {"deleted": result.rowcount}
 
 
+@router.get("/access-logs/ranked")
+async def get_ranked_access_logs(
+    days: Optional[int] = None,
+    limit: int = 50,
+    namespace: Optional[str] = None,
+    include_human: bool = False,
+):
+    """
+    Aggregate access counts per node, ordered by frequency (high-traffic first).
+
+    - days: only count accesses within the last N days (None = all time).
+    - limit: max number of nodes to return (default 50).
+    - namespace: restrict to a namespace (None = current namespace).
+    - include_human: by default only AI-side reads (context=mcp_read) are
+      counted so dashboard browsing doesn't skew importance; set true to
+      include human reads too.
+
+    Returns list of {node_uuid, access_count, last_accessed_at, uris: [...]},
+    with each node's current URI paths (best path first).
+    """
+    from db.models import Path as PathModel, Edge as EdgeModel, Node as NodeModel
+
+    graph = get_graph_service()
+    target_namespace = (namespace if namespace is not None else get_namespace()).strip()
+
+    filters = [MemoryAccessLog.namespace == target_namespace]
+    if not include_human:
+        filters.append(MemoryAccessLog.context == "mcp_read")
+    if days is not None and days > 0:
+        cutoff = datetime.now() - timedelta(days=days)
+        filters.append(MemoryAccessLog.accessed_at >= cutoff)
+
+    async with graph.session() as session:
+        count_stmt = (
+            select(
+                MemoryAccessLog.node_uuid,
+                func.count(MemoryAccessLog.id).label("access_count"),
+                func.max(MemoryAccessLog.accessed_at).label("last_accessed_at"),
+            )
+            .where(*filters)
+            .group_by(MemoryAccessLog.node_uuid)
+            .order_by(func.count(MemoryAccessLog.id).desc())
+            .limit(limit)
+        )
+        rows = (await session.execute(count_stmt)).all()
+
+        node_uuids = [row.node_uuid for row in rows]
+        uris_by_node: dict = {uid: [] for uid in node_uuids}
+        if node_uuids:
+            path_stmt = (
+                select(
+                    PathModel.node_uuid,
+                    PathModel.domain,
+                    PathModel.path,
+                )
+                .select_from(PathModel)
+                .join(EdgeModel, PathModel.edge_id == EdgeModel.id)
+                .where(PathModel.namespace == target_namespace)
+                .where(EdgeModel.child_uuid.in_(node_uuids))
+            )
+            path_rows = (await session.execute(path_stmt)).all()
+            for node_uuid, domain, path in path_rows:
+                uris_by_node.setdefault(node_uuid, []).append(f"{domain}://{path}")
+
+        result = []
+        for row in rows:
+            result.append({
+                "node_uuid": row.node_uuid,
+                "access_count": row.access_count,
+                "last_accessed_at": row.last_accessed_at.isoformat() if row.last_accessed_at else None,
+                "uris": uris_by_node.get(row.node_uuid, []),
+            })
+        return result
+
+
 class RestoreOrphanRequest(BaseModel):
     new_domain: str = "core"
     new_path: str

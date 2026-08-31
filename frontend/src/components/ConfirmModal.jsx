@@ -1,15 +1,17 @@
 import React, { useEffect } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
+import { useLocale } from '../i18n/useLocale';
 
 export default function ConfirmModal({
   title = 'Confirm',
   message = 'Are you sure?',
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   variant = 'default',
   onConfirm,
   onCancel,
 }) {
+  const { t } = useLocale();
   useEffect(() => {
     const handleKey = (e) => {
       if (e.key === 'Escape') onCancel?.();
@@ -51,7 +53,7 @@ export default function ConfirmModal({
             onClick={onCancel}
             className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors"
           >
-            {cancelLabel}
+            {cancelLabel ?? t('common.cancel')}
           </button>
           <button
             onClick={onConfirm}
@@ -61,7 +63,7 @@ export default function ConfirmModal({
                 : 'bg-indigo-600 hover:bg-indigo-500 text-white'
             }`}
           >
-            {confirmLabel}
+            {confirmLabel ?? t('common.confirm')}
           </button>
         </div>
       </div>

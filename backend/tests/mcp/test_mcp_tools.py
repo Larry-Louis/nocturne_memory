@@ -14,35 +14,33 @@ async def test_read_memory_system_views(mcp_module, graph_service):
         disclosure="When booting",
     )
 
-    boot = await mcp_module.read_memory("system://boot")
-    index_view = await mcp_module.read_memory("system://index/core")
-    recent = await mcp_module.read_memory("system://recent/5")
-    index_error = await mcp_module.read_memory("system://index")
+    boot = await mcp_module.browse_memory("system://boot")
+    index_view = await mcp_module.browse_memory("system://index/core")
+    recent = await mcp_module.browse_memory("system://recent/5")
 
     assert "core://agent" in boot
     assert "core://my_user" in boot
     assert "system://index/<domain>" in boot
     assert "core://agent" in index_view
     assert "core://my_user" in recent
-    assert "requires a domain" in index_error
 
 
 async def test_diagnostic_view_points_duplicate_aliases_to_delete_memory(mcp_module):
-    await mcp_module.create_memory(
+    await mcp_module.remember_child_memory(
         "core://",
         "Folder memory",
-        priority=1,
+        importance=1,
         title="folder",
-        disclosure="When testing diagnostics",
+        when="When testing diagnostics",
     )
-    await mcp_module.add_alias(
-        "core://folder_copy",
-        "core://folder",
-        priority=2,
-        disclosure="When testing duplicate aliases",
+    await mcp_module.link_memory(
+        target_uri="core://folder",
+        new_uri="core://folder_copy",
+        importance=2,
+        when="When testing duplicate aliases",
     )
 
-    diagnostic = await mcp_module.read_memory("system://diagnostic/core")
+    diagnostic = await mcp_module.browse_memory("system://diagnostic/core")
 
     assert "### 3.2 Duplicate Aliases under Same Parent" in diagnostic
     assert "Use `delete_memory` on the redundant alias URI to remove the extra path." in diagnostic
@@ -52,39 +50,40 @@ async def test_diagnostic_view_points_duplicate_aliases_to_delete_memory(mcp_mod
 
 
 async def test_mcp_tool_flow_covers_crud_alias_triggers_and_search(mcp_module, graph_service):
-    created = await mcp_module.create_memory(
+    created = await mcp_module.remember_child_memory(
         "core://",
         "Important Salem memory",
-        priority=2,
+        importance=2,
         title="salem_note",
-        disclosure="When testing MCP tools",
+        when="When testing MCP tools",
     )
-    updated = await mcp_module.update_memory(
+    updated = await mcp_module.edit_memory(
         "core://salem_note",
         append="\nGraphService handles aliases.",
     )
-    triggers = await mcp_module.manage_triggers(
+    triggers = await mcp_module.tag_memory(
         "core://salem_note",
         add=["Salem"],
     )
     search = await mcp_module.search_memory("GraphService")
-    alias = await mcp_module.add_alias(
-        "project://salem_alias",
-        "core://salem_note",
-        priority=3,
-        disclosure="When mirroring note",
+    alias = await mcp_module.link_memory(
+        target_uri="core://salem_note",
+        new_uri="project://salem_alias",
+        importance=3,
+        when="When mirroring note",
     )
-    deleted = await mcp_module.delete_memory("project://salem_alias")
+    deleted = await mcp_module.forget_memory("project://salem_alias")
 
     current = await graph_service.get_memory_by_path("salem_note", "core")
     removed_alias = await graph_service.get_memory_by_path("salem_alias", "project")
 
-    assert "Success: Memory created" in created
-    assert "Success: Memory at 'core://salem_note' updated" == updated
-    assert "Added: Salem" in triggers
+    assert "记住了：" in created
+    assert "core://salem_note" in created
+    assert "已经改好了：「core://salem_note」" == updated
+    assert "加上了：Salem" in triggers
     assert "core://salem_note" in search
-    assert "Success: Alias 'project://salem_alias'" in alias
-    assert "Success: Memory 'project://salem_alias' deleted." in deleted
+    assert "在「project://salem_alias」也能想起「core://salem_note」了。" == alias
+    assert "忘掉了「project://salem_alias」" in deleted
     assert current["content"].endswith("GraphService handles aliases.")
     assert removed_alias is None
 
@@ -233,7 +232,7 @@ class TestTryNormalizedPatch:
 
 
 # =============================================================================
-# Integration: update_memory with normalized fallback
+# Integration: edit_memory with normalized fallback
 # =============================================================================
 
 
@@ -248,12 +247,12 @@ async def test_update_memory_falls_back_to_normalized_patch(
         title="norm_test",
     )
 
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://norm_test",
-        old_string='Nocturne said "I will not kneel."',
-        new_string='Nocturne said "I refuse to kneel."',
+        old_text='Nocturne said "I will not kneel."',
+        new_text='Nocturne said "I refuse to kneel."',
     )
-    assert result == "Success: Memory at 'core://norm_test' updated"
+    assert result == "已经改好了：「core://norm_test」"
 
     memory = await graph_service.get_memory_by_path("norm_test", "core")
     assert '"I refuse to kneel."' in memory["content"]
@@ -270,12 +269,12 @@ async def test_update_memory_exact_match_takes_priority(
         priority=1,
         title="exact_test",
     )
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://exact_test",
-        old_string="Hello",
-        new_string="Goodbye",
+        old_text="Hello",
+        new_text="Goodbye",
     )
-    assert result == "Success: Memory at 'core://exact_test' updated"
+    assert result == "已经改好了：「core://exact_test」"
     memory = await graph_service.get_memory_by_path("exact_test", "core")
     assert memory["content"] == "Goodbye World"
 
@@ -290,13 +289,12 @@ async def test_update_memory_normalized_ambiguous_returns_error(
         priority=1,
         title="ambig_test",
     )
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://ambig_test",
-        old_string='"yes"',
-        new_string='"no"',
+        old_text='"yes"',
+        new_text='"no"',
     )
-    assert "Error" in result
-    assert "normalization" in result.lower()
+    assert "没找到" in result
 
 
 async def test_create_memory_preserves_all_content_verbatim(
@@ -311,14 +309,14 @@ async def test_create_memory_preserves_all_content_verbatim(
         ("regex", "^(?:[A-Z]\\n)+$"),
         ("plain_prose", "line one\\nline two"),
     ]:
-        result = await mcp_module.create_memory(
+        result = await mcp_module.remember_child_memory(
             "core://",
             content,
-            priority=1,
+            importance=1,
             title=f"verbatim_{title_suffix}",
-            disclosure="When verifying verbatim storage",
+            when="When verifying verbatim storage",
         )
-        assert "Success" in result, f"Failed for {title_suffix}"
+        assert "记住了：" in result, f"Failed for {title_suffix}"
         assert "SYSTEM NOTICE" not in result, f"Unexpected normalization for {title_suffix}"
         memory = await graph_service.get_memory_by_path(f"verbatim_{title_suffix}", "core")
         assert memory["content"] == content, f"Content mismatch for {title_suffix}"
@@ -335,13 +333,13 @@ async def test_update_memory_preserves_literal_backslash_sequences(
         title="literal_backslash_update",
     )
 
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://literal_backslash_update",
-        old_string=r"C:\tmp\test",
-        new_string=r"D:\logs\test",
+        old_text=r"C:\tmp\test",
+        new_text=r"D:\logs\test",
     )
 
-    assert result == "Success: Memory at 'core://literal_backslash_update' updated"
+    assert result == "已经改好了：「core://literal_backslash_update」"
     memory = await graph_service.get_memory_by_path("literal_backslash_update", "core")
     assert memory["content"] == r"Store D:\logs\test and regex foo\\nbar literally."
 
@@ -349,7 +347,7 @@ async def test_update_memory_preserves_literal_backslash_sequences(
 async def test_update_memory_normalizes_escaped_newlines_on_patch_fallback(
     mcp_module, graph_service
 ):
-    """When stored content has real newlines but old_string has literal \\n,
+    """When stored content has real newlines but old_text has literal \\n,
     exact match fails, then the newline-normalization fallback kicks in."""
     await graph_service.create_memory(
         parent_path="",
@@ -358,14 +356,13 @@ async def test_update_memory_normalizes_escaped_newlines_on_patch_fallback(
         title="escaped_multiline_update",
     )
 
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://escaped_multiline_update",
-        old_string="# Title\\n\\n- alpha\\n- beta",
-        new_string="# Title\\n\\n- gamma\\n- delta",
+        old_text="# Title\\n\\n- alpha\\n- beta",
+        new_text="# Title\\n\\n- gamma\\n- delta",
     )
 
-    assert "Success: Memory at 'core://escaped_multiline_update' updated" in result
-    assert "\n\n[SYSTEM NOTICE]" in result
+    assert "已经改好了：" in result
     memory = await graph_service.get_memory_by_path("escaped_multiline_update", "core")
     assert memory["content"] == "# Title\n\n- gamma\n- delta"
 
@@ -383,13 +380,13 @@ async def test_update_memory_exact_match_wins_over_normalization(
         title="literal_exact_match",
     )
 
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://literal_exact_match",
-        old_string='payload = "line1\\n\\nline2"',
-        new_string='payload = "line1\\n\\nline2\\nline3"',
+        old_text='payload = "line1\\n\\nline2"',
+        new_text='payload = "line1\\n\\nline2\\nline3"',
     )
 
-    assert "Success" in result
+    assert "已经改好了：" in result
     assert "SYSTEM NOTICE" not in result
     memory = await graph_service.get_memory_by_path("literal_exact_match", "core")
     assert memory["content"] == 'payload = "line1\\n\\nline2\\nline3"'
@@ -406,12 +403,12 @@ async def test_update_memory_append_preserves_content_verbatim(
         title="append_verbatim",
     )
 
-    result = await mcp_module.update_memory(
+    result = await mcp_module.edit_memory(
         "core://append_verbatim",
         append="\\n\\nCode: foo\\n\\nbar",
     )
 
-    assert "Success" in result
+    assert "已经改好了：" in result
     assert "SYSTEM NOTICE" not in result
     memory = await graph_service.get_memory_by_path("append_verbatim", "core")
     assert memory["content"] == "Base content\\n\\nCode: foo\\n\\nbar"

@@ -16,11 +16,19 @@ import {
   Loader2,
   Plus,
   Clock,
+  FolderInput,
+  Eye,
+  Code2,
+  Copy,
+  Check,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { api, getSettingsBootUris, toggleSettingsBootUri, deleteNode, searchMemories, createMemory, renameNode, addDomain, removeDomain, getDomains } from '../../lib/api';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { api, getSettingsBootUris, toggleSettingsBootUri, deleteNode, searchMemories, createMemory, renameNode, moveNode, addDomain, removeDomain, getDomains } from '../../lib/api';
 import { toast } from '../../components/Toast';
 import { useLocale } from '../../i18n/useLocale';
+import PromptModal from '../../components/PromptModal';
 import CreateMemoryModal from './components/CreateMemoryModal';
 import AliasManager from './components/AliasManager';
 import PriorityBadge from './components/PriorityBadge';
@@ -61,6 +69,7 @@ export default function MemoryBrowser() {
   const [error, setError] = useState(null);
   const [data, setData] = useState({ node: null, children: [], breadcrumbs: [] });
   const [domains, setDomains] = useState([]);
+  const [pathCopied, setPathCopied] = useState(false);
   
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
@@ -70,10 +79,15 @@ export default function MemoryBrowser() {
   const [editWorldTimestamp, setEditWorldTimestamp] = useState('');
   const [saving, setSaving] = useState(false);
   const [bootUris, setBootUris] = useState([]);
+  const [viewMode, setViewMode] = useState('markdown'); // 'markdown' | 'source'
 
   // Delete
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Move
+  const [showMoveModal, setShowMoveModal] = useState(false);
+  const [moving, setMoving] = useState(false);
 
   // Create Memory
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -238,6 +252,30 @@ export default function MemoryBrowser() {
     }
   };
 
+  const handleMove = async (targetParentPath) => {
+    const trimmed = (targetParentPath || '').trim();
+    if (!trimmed) {
+      toast(t('memory.move.path_required'), "error");
+      return;
+    }
+    setMoving(true);
+    try {
+      const result = await moveNode({ path, domain, target_parent_path: trimmed });
+      setShowMoveModal(false);
+      toast(t('memory.toast.move_success', { uri: result.new_uri }), "success");
+      // Navigate first — navigateTo changes the route params and the effect
+      // re-fetches the new path automatically. Do NOT refresh the old path
+      // here: after a successful move the old path is gone (404), and the
+      // rejected promise would be caught below as a bogus "move failed" toast
+      // even though the move itself succeeded.
+      navigateTo(result.new_path, result.new_domain || domain);
+    } catch (err) {
+      toast(t('memory.toast.move_failed', { error: err.response?.data?.detail || err.message }), "error");
+    } finally {
+      setMoving(false);
+    }
+  };
+
   const handleCreateMemory = async () => {
     setShowCreateModal(false);
     await refreshData();
@@ -337,6 +375,55 @@ export default function MemoryBrowser() {
     searchSeqRef.current++;
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
   };
+
+  const copyCurrentPath = useCallback(async () => {
+    const text = `${domain}://${path || 'root'}`;
+    let copied = false;
+    // 1) 优先尝试 Clipboard API（仅在安全上下文可用，http 下会直接抛错）
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } else {
+        throw new Error('insecure-context');
+      }
+    } catch {
+      // 2) 回退到 textarea + execCommand，F5 后 http/ip 访问也能用
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.width = '2em';
+        ta.style.height = '2em';
+        ta.style.padding = '0';
+        ta.style.border = 'none';
+        ta.style.outline = 'none';
+        ta.style.boxShadow = 'none';
+        ta.style.background = 'transparent';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        // execCommand 在部分浏览器返回 false 但实际已复制，所以不以返回值为准
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        copied = true;
+      } catch (e) {
+        console.error('copy fallback failed', e);
+        copied = false;
+      }
+    }
+    if (copied) {
+      setPathCopied(true);
+      setTimeout(() => setPathCopied(false), 1500);
+    } else {
+      toast('复制失败，请手动选择复制', 'error');
+    }
+  }, [domain, path]);
 
   const isRoot = !path;
   const node = data.node;
@@ -441,17 +528,31 @@ export default function MemoryBrowser() {
              </div>
         </div>
 
-        <div className="mt-auto p-4 border-t border-slate-800/30">
-             <div className="bg-slate-900/50 rounded p-3 border border-slate-800/50">
-                 <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
-                    <Hash size={12} />
-                    <span>{t('memory.sidebar.current_path')}</span>
-                 </div>
-                 <code className="block text-[10px] font-mono text-indigo-300/80 break-all leading-tight">
-                    {domain}://{path || 'root'}
-                 </code>
-             </div>
-        </div>
+         <div className="mt-auto p-4 border-t border-slate-800/30">
+              <div className="bg-slate-900/50 rounded p-3 border border-slate-800/50 group/path">
+                  <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                     <Hash size={12} />
+                     <span>{t('memory.sidebar.current_path')}</span>
+                     <button
+                      onClick={copyCurrentPath}
+                      className="ml-auto p-1 rounded hover:bg-slate-800/50 text-slate-600 hover:text-slate-300 transition-colors"
+                      title={pathCopied ? 'Copied!' : 'Copy path'}
+                    >
+                      {pathCopied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                    </button>
+                  </div>
+                  <code
+                    onClick={copyCurrentPath}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyCurrentPath(); } }}
+                    role="button"
+                    tabIndex={0}
+                    title={pathCopied ? 'Copied!' : 'Click to copy'}
+                    className="block text-[10px] font-mono break-all leading-tight rounded px-1 -mx-1 py-0.5 cursor-pointer transition-all select-all border border-transparent hover:border-slate-700/50 hover:bg-slate-800/40 active:scale-[0.98] hover:text-indigo-200 text-indigo-300/80 focus:outline-none focus:border-indigo-500/40 focus:bg-slate-800/40"
+                  >
+                     {domain}://{path || 'root'}
+                  </code>
+              </div>
+         </div>
       </div>
 
       {/* Main Area */}
@@ -553,6 +654,12 @@ export default function MemoryBrowser() {
                                           </h1>
                                         )}
                                         <PriorityBadge priority={node.priority} size="lg" />
+                                        {node.access_count > 0 && (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border bg-slate-800/40 border-slate-700/40 text-slate-400 font-mono" title={t('memory.access_count_tooltip')}>
+                                            <Eye size={12} />
+                                            {node.access_count}
+                                          </span>
+                                        )}
                                     </div>
                                     
                                     {(node.disclosure || node.world_timestamp) && !editing && (
@@ -607,6 +714,21 @@ export default function MemoryBrowser() {
                                             {t('memory.boot.label')}
                                         </button>
                                     )}
+                                    {!editing && !node.is_virtual && (
+                                        <button
+                                            onClick={() => setViewMode(mode => mode === 'markdown' ? 'source' : 'markdown')}
+                                            title={viewMode === 'markdown' ? t('memory.view.source_tooltip') : t('memory.view.markdown_tooltip')}
+                                            className={clsx(
+                                                "flex items-center gap-2 px-4 py-2 rounded text-sm font-medium transition-all border",
+                                                viewMode === 'markdown'
+                                                    ? "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 hover:border-slate-600"
+                                                    : "bg-indigo-950/40 border-indigo-700/50 text-indigo-300 hover:bg-indigo-950/60 hover:border-indigo-600/60"
+                                            )}
+                                        >
+                                            {viewMode === 'markdown' ? <Code2 size={16} /> : <Eye size={16} />}
+                                            {viewMode === 'markdown' ? t('memory.view.source') : t('memory.view.markdown')}
+                                        </button>
+                                    )}
                                     {!editing && (
                                         <button
                                             onClick={() => setShowCreateModal(true)}
@@ -627,6 +749,13 @@ export default function MemoryBrowser() {
                                         <>
                                             <button onClick={startEditing} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600">
                                                 <Edit3 size={16} /> {t('memory.edit.edit')}
+                                            </button>
+                                            <button
+                                              onClick={() => setShowMoveModal(true)}
+                                              className="flex items-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 rounded text-sm font-medium transition-colors border border-slate-700 hover:border-slate-600"
+                                              title={t('memory.move.tooltip')}
+                                            >
+                                              <FolderInput size={16} />
                                             </button>
                                             <button
                                               onClick={() => setDeleteTarget({ domain, path })}
@@ -699,6 +828,12 @@ export default function MemoryBrowser() {
                                             className="w-full h-96 p-6 bg-transparent text-slate-200 font-mono text-sm leading-relaxed focus:outline-none resize-y"
                                             spellCheck={false}
                                         />
+                                    ) : viewMode === 'markdown' ? (
+                                        <div className="bt-markdown p-6 md:p-8 max-w-none">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                {node.content || ''}
+                                            </ReactMarkdown>
+                                        </div>
                                     ) : (
                                         <div className="p-6 md:p-8 prose prose-invert prose-sm max-w-none">
                                             <GlossaryHighlighter
@@ -767,6 +902,19 @@ export default function MemoryBrowser() {
           onCreated={handleCreateMemory}
           parentPath={path}
           currentDomain={domain}
+        />
+      )}
+
+      {/* Move Modal */}
+      {showMoveModal && (
+        <PromptModal
+          title={t('memory.move.title')}
+          message={t('memory.move.message', { uri: `${domain}://${path}` })}
+          defaultValue=""
+          placeholder={t('memory.move.placeholder')}
+          submitLabel={moving ? t('memory.move.moving') : t('memory.move.confirm')}
+          onSubmit={handleMove}
+          onCancel={() => !moving && setShowMoveModal(false)}
         />
       )}
 

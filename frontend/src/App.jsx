@@ -223,6 +223,11 @@ function App() {
     setBackendError(false);
   }, []);
 
+  // 挂载时立即检测 locale（加载页/认证页也要显示正确语言，不能等认证完成）
+  useEffect(() => {
+    detectLocale();
+  }, []);
+
   // 组件挂载时，尝试发送一个无 token 的请求探测后端是否连通及鉴权状态
   useEffect(() => {
     let mounted = true;
@@ -266,12 +271,6 @@ function App() {
       window.removeEventListener(AUTH_ERROR_EVENT, handleAuthError);
     };
   }, [handleAuthError]);
-
-  useEffect(() => {
-    if (!isCheckingAuth && isAuthenticated) {
-      detectLocale();
-    }
-  }, [isCheckingAuth, isAuthenticated]);
 
   if (isCheckingAuth) {
     return (
