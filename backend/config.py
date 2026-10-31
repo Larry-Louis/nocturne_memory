@@ -51,6 +51,7 @@ DEFAULTS: dict[str, Any] = {
     "cors_origins": None,
     "public_readonly_mcp": False,
     "locale": None,
+    "bloat_min_bytes": 2400,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -63,6 +64,7 @@ _ENV_MAP: dict[str, str] = {
     "cors_origins": "CORS_ORIGINS",
     "public_readonly_mcp": "PUBLIC_READONLY_MCP",
     "locale": "LOCALE",
+    "bloat_min_bytes": "BLOAT_MIN_BYTES",
 }
 
 
@@ -98,7 +100,7 @@ def _save_file(cfg: dict) -> None:
 def _coerce(key: str, raw: str) -> Any:
     if key == "valid_domains":
         return [d.strip() for d in raw.split(",") if d.strip()]
-    if key == "web_port":
+    if key in ("web_port", "bloat_min_bytes", "db_pool_size", "db_max_overflow"):
         return int(raw)
     if key in ("auto_open_browser", "public_readonly_mcp"):
         return raw.lower() not in ("false", "0", "no")
@@ -249,6 +251,9 @@ def _load() -> dict:
                 ) from e
             raise
             
+        if "bloat_min_bytes" not in _cache:
+            _cache["bloat_min_bytes"] = DEFAULTS["bloat_min_bytes"]
+
         if _migrate_away_from_demo(_cache):
             try:
                 _save_file(_cache)

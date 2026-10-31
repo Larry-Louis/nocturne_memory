@@ -736,7 +736,26 @@ async def edit_memory(
             if old_text == new_text:
                 return "old_text 和 new_text 一模一样，没任何变化。"
 
-            count = current_content.count(old_text)
+            if "..." in old_text:
+                start_marker, end_marker = old_text.split("...", 1)
+                spans = []
+                start = 0
+                while start_marker and end_marker:
+                    start_pos = current_content.find(start_marker, start)
+                    if start_pos < 0:
+                        break
+                    end_pos = current_content.find(end_marker, start_pos + len(start_marker))
+                    if end_pos < 0:
+                        break
+                    spans.append((start_pos, end_pos + len(end_marker)))
+                    start = start_pos + 1
+                if len(spans) > 1:
+                    return f"「{old_text}」匹配到了多处，无法确定替换哪一处。请提供更具体的上下文。"
+                if len(spans) == 1:
+                    start_pos, end_pos = spans[0]
+                    content = current_content[:start_pos] + new_text + current_content[end_pos:]
+
+            count = current_content.count(old_text) if content is None else 0
             if count > 1:
                 return f"「{old_text}」在记忆里出现了 {count} 次，无法确定替换哪个。多写点上下文让它唯一。"
             if count == 1:
@@ -800,6 +819,73 @@ async def edit_memory(
         return f"没改掉：{str(e)}"
     except Exception as e:
         return f"没改掉：{str(e)}"
+
+
+@write_tool()
+async def update_memory(
+    uri: str,
+    old_string: Optional[str] = None,
+    new_string: Optional[str] = None,
+    append: Optional[str] = None,
+    priority: Optional[int] = None,
+    disclosure: Optional[str] = None,
+) -> str:
+    """Compatibility editor using upstream's English parameter names and block matching."""
+    if old_string is not None and "..." not in old_string:
+        result = await edit_memory(
+            uri,
+            old_text=old_string,
+            new_text=new_string,
+            append=append,
+            importance=priority,
+            when=disclosure,
+        )
+        if result.startswith("已经改好了："):
+            return f"Success: Memory at '{uri}' updated"
+        return result
+
+    if old_string is None or new_string is None:
+        return "Error: old_string and new_string are required for block matching."
+    if append is not None:
+        return "Error: Cannot use multiple content-editing modes at once."
+
+    domain, path = parse_uri(uri)
+    full_uri = make_uri(domain, path)
+    memory = await get_graph_service().get_memory_by_path(path, domain, namespace=get_namespace())
+    if not memory:
+        return f"Error: Memory at '{full_uri}' not found."
+
+    start_marker, end_marker = old_string.split("...", 1)
+    spans = []
+    start = 0
+    content = memory.get("content", "")
+    while start_marker and end_marker:
+        start_pos = content.find(start_marker, start)
+        if start_pos < 0:
+            break
+        end_pos = content.find(end_marker, start_pos + len(start_marker))
+        if end_pos < 0:
+            break
+        spans.append((start_pos, end_pos + len(end_marker)))
+        start = start_pos + 1
+
+    if not spans:
+        return f"Error: Could not find any match for `old_string` in '{full_uri}'."
+    if len(spans) > 1:
+        return f"Error: Ambiguous update. Found multiple matching blocks for `old_string` in '{full_uri}'."
+
+    start_pos, end_pos = spans[0]
+    updated_content = content[:start_pos] + new_string + content[end_pos:]
+    result = await get_graph_service().update_memory(
+        path=path,
+        content=updated_content,
+        priority=priority,
+        disclosure=disclosure,
+        domain=domain,
+        namespace=get_namespace(),
+    )
+    _record_rows(result.get("rows_before", {}), result.get("rows_after", {}))
+    return f"Success: Memory at '{full_uri}' updated"
 
 
 # ── 删除 ──────────────────────────────────────────────────────────────────

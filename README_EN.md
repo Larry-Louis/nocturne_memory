@@ -13,6 +13,12 @@
 **In one line**: Let your AI remember who it is — across sessions, across models. An MCP-based long-term memory server.
 Not just memory storage — a complete framework for developing an AI from an empty shell into an independent personality.
 
+**Even with a million characters of memory, every new chat still saves tokens and spares your context window.**
+
+A new chat loads only the core setup you specify; everything else is pulled in on demand.  
+In a real 969,926-character memory library, the first message loads just **7.2K characters**.  
+Over the past 30 days, **78%** of the entire library was recalled in some conversation.
+
 Compatible with any MCP client (OpenClaw / Cursor / Windsurf / GitHub Copilot / Cline / OpenCode / Gemini CLI / OpenAI Codex / Claude Code / Cherry Studio / Antigravity, etc.).
 
 ---
