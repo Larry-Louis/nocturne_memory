@@ -33,7 +33,13 @@ class DatabaseManager:
         self.db_type = self._detect_database_type(database_url)
 
         engine_kwargs = {"echo": False}
-        if self.db_type == "postgresql":
+        if self.db_type == "sqlite":
+            # SQLite is used by the local single-user deployment, where the
+            # UI can issue reads while a review rollback is writing. WAL lets
+            # readers continue during writes; the timeout prevents transient
+            # lock contention from surfacing as a 500/502 to the UI.
+            engine_kwargs["connect_args"] = {"timeout": 30}
+        elif self.db_type == "postgresql":
             parsed = urlparse(database_url)
             is_local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
 
@@ -64,6 +70,9 @@ class DatabaseManager:
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.close()
 
         self.async_session = async_sessionmaker(
@@ -80,12 +89,18 @@ class DatabaseManager:
         await self.engine.dispose()
         self.database_url = new_url
         self.db_type = self._detect_database_type(new_url)
-        self.engine = create_async_engine(new_url, echo=False)
+        reconnect_kwargs = {"echo": False}
+        if self.db_type == "sqlite":
+            reconnect_kwargs["connect_args"] = {"timeout": 30}
+        self.engine = create_async_engine(new_url, **reconnect_kwargs)
         if self.db_type == "sqlite":
             @event.listens_for(self.engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.close()
         self.async_session = async_sessionmaker(
             self.engine, class_=AsyncSession, expire_on_commit=False

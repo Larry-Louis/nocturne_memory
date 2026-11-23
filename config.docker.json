@@ -5,13 +5,18 @@
   "valid_domains": [
     "core",
     "writer",
-    "game",
     "notes",
     "narrative",
     "projects",
     "agents",
     "novels",
-    "acts"
+    "acts",
+    "games",
+    "rpmemorys",
+    "avs",
+    "todos",
+    "workings",
+    "coding"
   ],
   "boot_uris": {
     "": [
@@ -28,9 +33,10 @@
   "public_readonly_mcp": false,
   "locale": "zh",
   "world_clock": {
-    "current_time": "2026-08-22",
+    "current_time": "2026-11-09T18:05:00+08:00",
     "auto_timestamp": true,
     "show_relative": true,
     "format": "YYYY-MM-DD"
-  }
+  },
+  "bloat_min_bytes": 4800
 }

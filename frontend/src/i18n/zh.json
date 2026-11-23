@@ -354,12 +354,14 @@
       "disconnected": "与神经核心断开连接（后端离线）。",
       "retrieve_failed": "无法检索记忆片段。",
       "unknown_rollback": "回滚时发生未知错误",
+      "mass_rejection_partial": "有 {{count}} 项改动回滚失败",
       "retrieval_failed_title": "记忆检索失败"
     },
     "toast": {
       "rejection_failed": "拒绝失败：{{error}}",
       "integration_failed": "合并失败：{{error}}",
-      "mass_integration_failed": "批量合并失败：{{error}}"
+      "mass_integration_failed": "批量合并失败：{{error}}",
+      "mass_rejection_failed": "批量拒绝失败：{{error}}"
     },
     "sidebar": {
       "title": "变更审计",
@@ -371,6 +373,7 @@
     },
     "action": {
       "integrate_all": "全部应用",
+      "reject_all": "全部拒绝",
       "integrate_group": "应用",
       "reject_group": "拒绝",
       "retry": "重试"
@@ -385,7 +388,10 @@
       "reject_label": "回滚",
       "integrate_all_title": "应用全部改动",
       "integrate_all_message": "确定要应用并合并所有待处理的改动吗？审查队列将被清空。",
-      "integrate_all_label": "全部应用"
+      "integrate_all_label": "全部应用",
+      "reject_all_title": "拒绝全部改动",
+      "reject_all_message": "确定要回滚所有待处理的改动吗？此操作不可撤销。",
+      "reject_all_label": "全部拒绝"
     },
     "diff_status": {
       "creation_detected": "检测到新建",

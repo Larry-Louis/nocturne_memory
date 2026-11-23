@@ -360,12 +360,14 @@
       "disconnected": "Disconnected from Neural Core (backend offline).",
       "retrieve_failed": "Failed to retrieve memory fragments.",
       "unknown_rollback": "Unknown error during rollback",
+      "mass_rejection_partial": "{{count}} changes failed to roll back",
       "retrieval_failed_title": "Memory Retrieval Failed"
     },
     "toast": {
       "rejection_failed": "Rejection failed: {{error}}",
       "integration_failed": "Integration failed: {{error}}",
-      "mass_integration_failed": "Mass integration failed: {{error}}"
+      "mass_integration_failed": "Mass integration failed: {{error}}",
+      "mass_rejection_failed": "Mass rejection failed: {{error}}"
     },
     "sidebar": {
       "title": "Change Auditor",
@@ -377,6 +379,7 @@
     },
     "action": {
       "integrate_all": "Approve All",
+      "reject_all": "Reject All",
       "integrate_group": "Approve",
       "reject_group": "Reject",
       "retry": "Retry"
@@ -391,7 +394,10 @@
       "reject_label": "Roll Back",
       "integrate_all_title": "Approve All Changes",
       "integrate_all_message": "Approve and integrate ALL pending changes? The review queue will be cleared.",
-      "integrate_all_label": "Approve All"
+      "integrate_all_label": "Approve All",
+      "reject_all_title": "Reject All Changes",
+      "reject_all_message": "Roll back all pending changes? This cannot be undone.",
+      "reject_all_label": "Reject All"
     },
     "diff_status": {
       "creation_detected": "Creation Detected",

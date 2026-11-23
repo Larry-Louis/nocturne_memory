@@ -27,7 +27,12 @@ import config as _cfg
 # Ensure we can import from backend modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+    IS_MCP_V2 = False
+except ImportError:
+    from mcp.server.mcpserver import MCPServer as FastMCP
+    IS_MCP_V2 = True
 from mcp.server.transport_security import TransportSecuritySettings
 from db import (
     get_db_manager, get_graph_service, get_glossary_service,
@@ -213,14 +218,22 @@ async def lifespan(server: FastMCP):
         await close_db()
 
 
-# Initialize FastMCP server with the lifespan hook
-mcp = FastMCP(
-    "Nocturne Memory Interface",
-    lifespan=lifespan,
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False  # safe when behind a trusted reverse proxy
-    ),
+sec_settings = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False  # safe when behind a trusted reverse proxy
 )
+
+# Initialize FastMCP server with the lifespan hook
+if IS_MCP_V2:
+    mcp = FastMCP(
+        "Nocturne Memory Interface",
+        lifespan=lifespan,
+    )
+else:
+    mcp = FastMCP(
+        "Nocturne Memory Interface",
+        lifespan=lifespan,
+        transport_security=sec_settings,
+    )
 
 # =============================================================================
 # Domain Configuration
@@ -855,26 +868,39 @@ async def update_memory(
     if not memory:
         return f"Error: Memory at '{full_uri}' not found."
 
-    start_marker, end_marker = old_string.split("...", 1)
-    spans = []
-    start = 0
+    start_marker = old_string[:old_string.find("...")]
+    end_marker = old_string[old_string.rfind("...") + 3:]
     content = memory.get("content", "")
-    while start_marker and end_marker:
-        start_pos = content.find(start_marker, start)
-        if start_pos < 0:
-            break
-        end_pos = content.find(end_marker, start_pos + len(start_marker))
-        if end_pos < 0:
-            break
-        spans.append((start_pos, end_pos + len(end_marker)))
-        start = start_pos + 1
+    spans = set()
+
+    # Collect every (start, end) block candidate, not just the first end after
+    # each start. A single start marker with two possible end markers is
+    # ambiguous and must be rejected (matches upstream block-match semantics).
+    if start_marker and end_marker:
+        s_idx = 0
+        while True:
+            start_pos = content.find(start_marker, s_idx)
+            if start_pos < 0:
+                break
+            e_idx = start_pos + len(start_marker)
+            while True:
+                end_pos = content.find(end_marker, e_idx)
+                if end_pos < 0:
+                    break
+                spans.add((start_pos, end_pos + len(end_marker)))
+                if len(spans) > 5:
+                    break
+                e_idx = end_pos + 1
+            if len(spans) > 5:
+                break
+            s_idx = start_pos + 1
 
     if not spans:
         return f"Error: Could not find any match for `old_string` in '{full_uri}'."
     if len(spans) > 1:
         return f"Error: Ambiguous update. Found multiple matching blocks for `old_string` in '{full_uri}'."
 
-    start_pos, end_pos = spans[0]
+    start_pos, end_pos = sorted(spans)[0]
     updated_content = content[:start_pos] + new_string + content[end_pos:]
     result = await get_graph_service().update_memory(
         path=path,

@@ -61,7 +61,7 @@ async def test_add_alias_cascades_child_paths(graph_service):
     assert mirrored_child["content"] == "Nested child memory"
 
 
-async def test_remove_path_rejects_orphaning_child_nodes(graph_service):
+async def test_remove_path_cascades_to_children_rm_rf(graph_service):
     await graph_service.create_memory(
         parent_path="",
         content="Parent memory",
@@ -76,9 +76,23 @@ async def test_remove_path_rejects_orphaning_child_nodes(graph_service):
         title="child",
         disclosure="When testing orphan prevention",
     )
+    await graph_service.create_memory(
+        parent_path="parent/child",
+        content="Grandchild memory",
+        priority=3,
+        title="grandchild",
+        disclosure="When testing orphan prevention",
+    )
 
-    with pytest.raises(ValueError, match="would become unreachable"):
-        await graph_service.remove_path("parent", "core")
+    # rm -rf: parent + descendants are deleted together, no orphan-blocking error
+    await graph_service.remove_path("parent", "core")
+
+    assert await graph_service.get_memory_by_path("parent", domain="core") is None
+    assert await graph_service.get_memory_by_path("parent/child", domain="core") is None
+    assert await graph_service.get_memory_by_path("parent/child/grandchild", domain="core") is None
+    # Soft-GC keeps memories as deprecated/orphaned for review
+    orphans = await graph_service.get_all_orphan_memories()
+    assert any(item["category"] == "orphaned" for item in orphans)
 
 
 async def test_get_children_returns_both_children_via_alias_and_canonical_paths(graph_service):

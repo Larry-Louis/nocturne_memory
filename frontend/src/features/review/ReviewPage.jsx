@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Database,
   Trash2,
+  X,
   Box,
   Link as LinkIcon,
   BookOpen
@@ -28,8 +29,22 @@ function ReviewPage() {
   const [loading, setLoading] = useState(false);
   const [diffError, setDiffError] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [processingAll, setProcessingAll] = useState(false);
+  const [operationLogs, setOperationLogs] = useState([]);
 
   const diffRequestRef = useRef(0);
+
+  const addOperationLog = (message, level = 'info') => {
+    const entry = {
+      id: `${Date.now()}-${Math.random()}`,
+      time: new Date().toLocaleTimeString(),
+      message,
+      level,
+    };
+    setOperationLogs(prev => [...prev.slice(-39), entry]);
+    const logger = level === 'error' ? console.error : level === 'warn' ? console.warn : console.info;
+    logger('[Review]', message);
+  };
 
   useEffect(() => { loadChanges(); }, []);
 
@@ -129,6 +144,67 @@ function ReviewPage() {
           setDiffData(null);
         } catch (err) {
           toast(t('review.toast.mass_integration_failed', { error: err.message }), "error");
+        }
+      },
+      onCancel: () => setConfirmState(null),
+    });
+  };
+
+  const handleRejectAll = () => {
+    setConfirmState({
+      title: t('review.confirm.reject_all_title'),
+      message: t('review.confirm.reject_all_message'),
+      variant: "danger",
+      confirmLabel: t('review.confirm.reject_all_label'),
+      onConfirm: async () => {
+        setConfirmState(null);
+        setProcessingAll(true);
+        setOperationLogs([]);
+        addOperationLog('Reject all started');
+        try {
+          let pending = await getGroups();
+          let retryRound = 0;
+          addOperationLog(`Loaded ${pending.length} pending group(s)`);
+
+          // Re-read the queue after each pass. A rollback can change the
+          // grouping, so the original React state is not a reliable worklist.
+          while (pending.length > 0 && retryRound < 3) {
+            addOperationLog(`Round ${retryRound + 1}: processing ${pending.length} group(s)`);
+            for (const change of pending) {
+              addOperationLog(`Rollback start: ${change.display_uri} (${change.node_uuid})`);
+              try {
+                await rollbackGroup(change.node_uuid);
+                addOperationLog(`Rollback response: ${change.display_uri}`);
+                // A failed rollback remains in the refreshed queue and will
+                // be retried in the next pass.
+              } catch (err) {
+                // Another request may have already rolled this group back.
+                // Treat that as handled and continue with the remaining groups.
+                // Non-404 failures remain in the refreshed queue and will be
+                // retried in the next pass.
+                const status = err.response?.status || 'network-error';
+                addOperationLog(`Rollback failed: ${change.display_uri} (${status})`, status === 404 ? 'warn' : 'error');
+              }
+            }
+            pending = await getGroups();
+            addOperationLog(`After round ${retryRound + 1}: ${pending.length} group(s) remain`);
+            retryRound += 1;
+          }
+
+          if (pending.length > 0) {
+            addOperationLog(`Reject all stopped with ${pending.length} group(s) remaining`, 'error');
+            throw new Error(t('review.error.mass_rejection_partial', { count: pending.length }));
+          }
+          addOperationLog('Reject all completed');
+          setChanges([]);
+          setSelectedChange(null);
+          setDiffData(null);
+        } catch (err) {
+          addOperationLog(`Reject all failed: ${err.message}`, 'error');
+          await loadChanges();
+          toast(t('review.toast.mass_rejection_failed', { error: err.message }), "error");
+        } finally {
+          setProcessingAll(false);
         }
       },
       onCancel: () => setConfirmState(null),
@@ -243,14 +319,46 @@ function ReviewPage() {
         </div>
 
         {changes.length > 0 && (
-          <div className="p-4 border-t border-slate-800/30 bg-slate-900/20 backdrop-blur-sm">
+          <div className="p-4 border-t border-slate-800/30 bg-slate-900/20 backdrop-blur-sm flex gap-2">
+            <button
+              onClick={handleRejectAll}
+              disabled={processingAll}
+              className="flex-1 group flex items-center justify-center gap-2 bg-slate-800/50 hover:bg-rose-900/20 disabled:opacity-50 disabled:cursor-wait text-slate-400 hover:text-rose-400 border border-slate-700 hover:border-rose-800/50 rounded-md py-2.5 text-xs font-medium transition-all duration-300"
+            >
+              <X size={14} className="group-hover:scale-110 transition-transform" />
+              <span>{t('review.action.reject_all')}</span>
+            </button>
             <button
               onClick={handleClearAll}
-              className="w-full group flex items-center justify-center gap-2 bg-slate-800/50 hover:bg-emerald-900/20 text-slate-400 hover:text-emerald-400 border border-slate-700 hover:border-emerald-800/50 rounded-md py-2.5 text-xs font-medium transition-all duration-300"
+              className="flex-1 group flex items-center justify-center gap-2 bg-slate-800/50 hover:bg-emerald-900/20 text-slate-400 hover:text-emerald-400 border border-slate-700 hover:border-emerald-800/50 rounded-md py-2.5 text-xs font-medium transition-all duration-300"
             >
               <Check size={14} className="group-hover:scale-110 transition-transform" />
               <span>{t('review.action.integrate_all')}</span>
             </button>
+          </div>
+        )}
+
+        {operationLogs.length > 0 && (
+          <div className="border-t border-slate-800/30 bg-black/20 px-4 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] uppercase tracking-widest text-slate-500">Operation Log</span>
+              <button
+                onClick={() => setOperationLogs([])}
+                className="text-[10px] text-slate-600 hover:text-slate-300 transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="max-h-40 overflow-y-auto space-y-1 font-mono text-[10px] leading-relaxed">
+              {operationLogs.map(log => (
+                <div key={log.id} className={clsx(
+                  'break-words',
+                  log.level === 'error' ? 'text-rose-400' : log.level === 'warn' ? 'text-amber-400' : 'text-slate-500'
+                )}>
+                  <span className="text-slate-700">{log.time}</span> {log.message}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

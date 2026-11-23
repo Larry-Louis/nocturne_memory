@@ -1744,20 +1744,20 @@ class GraphService:
         self, path: str, domain: str = "core", session: Optional[AsyncSession] = None, namespace: str = ""
     ) -> Dict[str, Any]:
         """
-        Remove a path and its sub-paths with orphan prevention.
+        Remove a path and its sub-paths (rm -rf semantics).
 
-        Pre-flight safety: refuses to proceed if any direct child of the
-        target node would become unreachable (no surviving paths outside
-        the deletion set).
+        If the target node has direct children that would lose their last
+        reachable path, they are cascade-deleted together with the target
+        (soft-GC: memories are kept as deprecated/orphaned for review).
+        When the target itself has a surviving alias in another location,
+        children are instead auto-healed by re-homing them under that alias.
 
         If the target node loses its last reachable path, pathless incoming/
         outgoing edges around the target node are pruned so dead graph
-        fragments do not linger.  The target node's memory is preserved but
-        becomes an orphan (recoverable via the review interface).
+        fragments do not linger.
 
         Raises:
-            ValueError: If the path does not exist, or if deletion would
-                create unreachable child nodes.
+            ValueError: If the path does not exist.
         """
         if path == "":
             raise ValueError(t("api.graph.remove_root"))
@@ -1829,30 +1829,33 @@ class GraphService:
                         repair_tasks.append(child_edge)
 
             if would_orphan:
-                # Label each orphaned child by one of its current paths —
-                # edge.name can be stale (an edge keeps the name it was
-                # created with, even after the child path was renamed).
-                orphan_labels = []
-                for child_edge in would_orphan:
-                    child_path_result = await session.execute(
-                        select(Path)
-                        .where(Path.node_uuid == child_edge.child_uuid)
-                        .limit(1)
+                if surviving_path is None:
+                    # Cascade delete: instead of blocking, delete orphaned subtrees together.
+                    would_orphan = []
+                else:
+                    # Should not happen (would_orphan only when surviving_path is None);
+                    # keep original guard as safety net.
+                    orphan_labels = []
+                    for child_edge in would_orphan:
+                        child_path_result = await session.execute(
+                            select(Path)
+                            .where(Path.node_uuid == child_edge.child_uuid)
+                            .limit(1)
+                        )
+                        child_path_row = child_path_result.scalar_one_or_none()
+                        if child_path_row is not None:
+                            label = f"{child_path_row.domain}://{child_path_row.path}"
+                        else:
+                            label = child_edge.name
+                        orphan_labels.append(
+                            f"'{label}' (node: {child_edge.child_uuid[:8]}...)"
+                        )
+                    details = ", ".join(orphan_labels)
+                    raise ValueError(
+                        t("api.graph.remove_orphan_children").format(
+                            domain=domain, path=path, details=details
+                        )
                     )
-                    child_path_row = child_path_result.scalar_one_or_none()
-                    if child_path_row is not None:
-                        label = f"{child_path_row.domain}://{child_path_row.path}"
-                    else:
-                        label = child_edge.name
-                    orphan_labels.append(
-                        f"'{label}' (node: {child_edge.child_uuid[:8]}...)"
-                    )
-                details = ", ".join(orphan_labels)
-                raise ValueError(
-                    t("api.graph.remove_orphan_children").format(
-                        domain=domain, path=path, details=details
-                    )
-                )
 
             if repair_tasks and surviving_path:
                 for child_edge in repair_tasks:
@@ -1916,6 +1919,18 @@ class GraphService:
             await self._gc_edge_if_pathless(session, target_edge, collector=collector)
 
             await self._gc_node_soft(session, target_node_uuid, collector=collector)
+
+            # Cascade soft-GC for descendant nodes that lost their last path.
+            # _delete_subtree_paths already removed all descendant paths under
+            # the deleted prefix; any node in affected_nodes that now has zero
+            # incoming paths would otherwise linger as a pathless orphan.
+            # GC'ing them here turns the previous "would become unreachable"
+            # error into a straight rm -rf.
+            for node_uuid in affected_nodes:
+                if node_uuid == target_node_uuid:
+                    continue
+                if await self._count_incoming_paths(session, node_uuid, search_all_namespaces=True) == 0:
+                    await self._gc_node_soft(session, node_uuid, collector=collector)
 
             for node_uuid in affected_nodes:
                 await self._search.refresh_search_documents_for_node(node_uuid, session=session, namespace=namespace)
